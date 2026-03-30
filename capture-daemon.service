@@ -1,0 +1,25 @@
+[Unit]
+Description=Egocentric Data Capture V2 Daemon
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=video
+WorkingDirectory=/home/pi/egocentric-data-capture-v2
+ExecStart=/usr/bin/python3 /home/pi/egocentric-data-capture-v2/capture_daemon.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Environment for Orbbec SDK
+Environment="LD_LIBRARY_PATH=/opt/OrbbecSDK/lib"
+Environment="QT_QPA_PLATFORM=offscreen"
+
+# Allow USB device access
+SupplementaryGroups=plugdev
+
+[Install]
+WantedBy=multi-user.target

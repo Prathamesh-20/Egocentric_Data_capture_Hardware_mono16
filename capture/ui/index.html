@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Egocentric Capture V2</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-primary:    #0a0c10;
+    --bg-secondary:  #12151c;
+    --bg-card:       #161a24;
+    --bg-elevated:   #1c2030;
+    --border:        #252a3a;
+    --border-light:  #2f3650;
+    --text-primary:  #e8eaf0;
+    --text-secondary:#8891a8;
+    --text-muted:    #555e76;
+    --accent-blue:   #3b82f6;
+    --accent-cyan:   #06b6d4;
+    --accent-green:  #10b981;
+    --accent-orange: #f59e0b;
+    --accent-red:    #ef4444;
+    --accent-purple: #8b5cf6;
+    --glow-blue:     rgba(59,130,246,0.15);
+    --glow-green:    rgba(16,185,129,0.15);
+    --glow-red:      rgba(239,68,68,0.15);
+    --glow-orange:   rgba(245,158,11,0.15);
+    --radius:        10px;
+    --radius-sm:     6px;
+    --font-mono:     'JetBrains Mono', monospace;
+    --font-sans:     'IBM Plex Sans', -apple-system, sans-serif;
+    --shadow:        0 4px 24px rgba(0,0,0,0.4);
+    --transition:    all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── HEADER ─────────────────────────────────────────────── */
+  header {
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky; top: 0; z-index: 100;
+    backdrop-filter: blur(12px);
+  }
+  .logo-area {
+    display: flex; align-items: center; gap: 14px;
+  }
+  .logo-icon {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: 700; color: #fff;
+  }
+  .logo-text {
+    font-family: var(--font-mono);
+    font-size: 15px; font-weight: 600;
+    letter-spacing: 1.5px; color: var(--text-primary);
+  }
+  .logo-version {
+    font-size: 10px; color: var(--text-muted);
+    font-weight: 400; letter-spacing: 0.5px;
+  }
+  .header-right {
+    display: flex; align-items: center; gap: 16px;
+  }
+  .status-pill {
+    font-family: var(--font-mono);
+    font-size: 12px; font-weight: 600;
+    padding: 6px 16px; border-radius: 20px;
+    letter-spacing: 1px;
+    transition: var(--transition);
+    text-transform: uppercase;
+  }
+  .pill-idle       { background: var(--bg-elevated); color: var(--text-muted); }
+  .pill-fov        { background: rgba(59,130,246,0.15); color: var(--accent-blue); border: 1px solid rgba(59,130,246,0.3); }
+  .pill-passed     { background: var(--glow-green); color: var(--accent-green); border: 1px solid rgba(16,185,129,0.3); }
+  .pill-failed     { background: var(--glow-red); color: var(--accent-red); border: 1px solid rgba(239,68,68,0.3); }
+  .pill-recording  { background: var(--glow-orange); color: var(--accent-orange); border: 1px solid rgba(245,158,11,0.3); animation: pulse-glow 2s infinite; }
+  .pill-converting { background: rgba(139,92,246,0.15); color: var(--accent-purple); border: 1px solid rgba(139,92,246,0.3); }
+  .pill-complete   { background: var(--glow-green); color: var(--accent-green); border: 1px solid rgba(16,185,129,0.3); }
+  .pill-error      { background: var(--glow-red); color: var(--accent-red); border: 1px solid rgba(239,68,68,0.3); }
+  .pill-frame_check { background: rgba(6,182,212,0.15); color: var(--accent-cyan); border: 1px solid rgba(6,182,212,0.3); }
+  .pill-session_active { background: var(--glow-orange); color: var(--accent-orange); border: 1px solid rgba(245,158,11,0.3); }
+  .pill-wrist_check_failed { background: var(--glow-red); color: var(--accent-red); border: 1px solid rgba(239,68,68,0.3); animation: pulse-glow-red 1.5s infinite; }
+
+  @keyframes pulse-glow {
+    0%,100% { box-shadow: 0 0 8px rgba(245,158,11,0.2); }
+    50%     { box-shadow: 0 0 20px rgba(245,158,11,0.4); }
+  }
+  @keyframes pulse-glow-red {
+    0%,100% { box-shadow: 0 0 8px rgba(239,68,68,0.2); }
+    50%     { box-shadow: 0 0 20px rgba(239,68,68,0.5); }
+  }
+
+  .settings-btn {
+    width: 36px; height: 36px; border-radius: 8px;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 18px;
+    cursor: pointer; transition: var(--transition);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .settings-btn:hover { background: var(--bg-card); color: var(--text-primary); border-color: var(--border-light); }
+
+  /* ── LAYOUT ─────────────────────────────────────────────── */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    grid-template-rows: auto 1fr auto;
+    gap: 20px;
+    padding: 20px 28px;
+    max-width: 1440px;
+    margin: 0 auto;
+    min-height: calc(100vh - 64px);
+  }
+
+  /* ── CARDS ──────────────────────────────────────────────── */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .card-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .card-title {
+    font-family: var(--font-mono);
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 1.5px; color: var(--text-muted);
+    text-transform: uppercase;
+  }
+  .card-badge {
+    font-family: var(--font-mono);
+    font-size: 10px; padding: 3px 8px;
+    border-radius: 4px; background: var(--bg-elevated);
+    color: var(--text-secondary);
+  }
+  .card-body { padding: 18px; }
+
+  /* ── OPERATOR PANEL ─────────────────────────────────────── */
+  .operator-row {
+    grid-column: 1 / -1;
+    display: flex; gap: 16px; align-items: stretch;
+  }
+  .operator-card {
+    flex: 1;
+  }
+  .input-group {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .input-group label {
+    font-size: 11px; font-weight: 600;
+    color: var(--text-muted); letter-spacing: 0.5px;
+    text-transform: uppercase;
+    font-family: var(--font-mono);
+  }
+  .input-group input, .input-group select {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    transition: var(--transition);
+    outline: none;
+  }
+  .input-group input:focus, .input-group select:focus {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+  }
+  .input-group input::placeholder { color: var(--text-muted); }
+  .input-row { display: flex; gap: 12px; }
+  .input-row .input-group { flex: 1; }
+
+  /* ── BUTTONS ────────────────────────────────────────────── */
+  .btn {
+    font-family: var(--font-mono);
+    font-size: 12px; font-weight: 600;
+    padding: 12px 24px; border-radius: var(--radius-sm);
+    border: none; cursor: pointer;
+    letter-spacing: 1px; text-transform: uppercase;
+    transition: var(--transition);
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .btn:active { transform: scale(0.97); }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; transform: none; }
+  .btn-fov     { background: var(--accent-blue); color: #fff; }
+  .btn-fov:hover:not(:disabled) { box-shadow: 0 0 20px rgba(59,130,246,0.3); }
+  .btn-start   { background: var(--accent-green); color: #fff; }
+  .btn-start:hover:not(:disabled) { box-shadow: 0 0 20px rgba(16,185,129,0.3); }
+  .btn-stop    { background: var(--accent-red); color: #fff; }
+  .btn-stop:hover:not(:disabled) { box-shadow: 0 0 20px rgba(239,68,68,0.3); }
+  .btn-row { display: flex; gap: 12px; margin-top: 14px; }
+
+  /* ── FEED / VIDEO ───────────────────────────────────────── */
+  .feed-area {
+    grid-column: 1;
+    display: flex; flex-direction: column; gap: 20px;
+  }
+  .feed-container {
+    position: relative;
+    background: var(--bg-primary);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    min-height: 320px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .feed-container img {
+    width: 100%; display: block;
+    border-radius: var(--radius-sm);
+  }
+  .feed-placeholder {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 13px; text-align: center;
+    padding: 40px;
+  }
+  .feed-placeholder .icon { font-size: 48px; margin-bottom: 12px; display: block; opacity: 0.3; }
+  .feed-overlay {
+    position: absolute; top: 12px; right: 12px;
+    background: rgba(0,0,0,0.7); backdrop-filter: blur(8px);
+    padding: 6px 12px; border-radius: var(--radius-sm);
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--accent-green);
+  }
+
+  /* ── TIMER ──────────────────────────────────────────────── */
+  .timer-display {
+    font-family: var(--font-mono);
+    font-size: 56px; font-weight: 700;
+    text-align: center;
+    color: var(--accent-orange);
+    letter-spacing: 4px;
+    padding: 20px;
+    text-shadow: 0 0 40px rgba(245,158,11,0.2);
+    display: none;
+  }
+  .timer-display.visible { display: block; }
+  .timer-label {
+    text-align: center; font-size: 12px;
+    color: var(--text-muted); margin-top: -8px;
+    font-family: var(--font-mono); letter-spacing: 1px;
+  }
+
+  /* ── SESSION MESSAGE ────────────────────────────────────── */
+  .session-message {
+    padding: 14px 18px;
+    background: var(--bg-elevated);
+    border-radius: var(--radius-sm);
+    font-size: 13px; color: var(--text-secondary);
+    border-left: 3px solid var(--border-light);
+    min-height: 24px;
+    transition: var(--transition);
+  }
+  .session-message.msg-error { border-left-color: var(--accent-red); color: var(--accent-red); }
+  .session-message.msg-success { border-left-color: var(--accent-green); }
+  .session-message.msg-warn { border-left-color: var(--accent-orange); }
+
+  /* ── SIDEBAR (right panel) ──────────────────────────────── */
+  .sidebar {
+    grid-column: 2;
+    grid-row: 2 / 4;
+    display: flex; flex-direction: column; gap: 20px;
+  }
+
+  /* ── SEGMENT TIMELINE ───────────────────────────────────── */
+  .timeline-scroll {
+    max-height: 320px;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  .timeline-scroll::-webkit-scrollbar { width: 4px; }
+  .timeline-scroll::-webkit-scrollbar-track { background: transparent; }
+  .timeline-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .seg-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: var(--radius-sm);
+    margin-bottom: 4px;
+    transition: var(--transition);
+    font-size: 12px;
+  }
+  .seg-row.active { background: var(--bg-elevated); }
+  .seg-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    flex-shrink: 0; transition: var(--transition);
+  }
+  .seg-dot.pending   { background: var(--border); }
+  .seg-dot.recording { background: var(--accent-orange); box-shadow: 0 0 8px rgba(245,158,11,0.5); animation: dot-pulse 1.2s infinite; }
+  .seg-dot.uploading { background: var(--accent-blue); }
+  .seg-dot.complete  { background: var(--accent-green); }
+  .seg-dot.failed    { background: var(--accent-red); }
+  @keyframes dot-pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.3)} }
+  .seg-label {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    flex: 1;
+  }
+  .seg-status {
+    font-family: var(--font-mono);
+    font-size: 10px; letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .seg-wrist {
+    font-size: 14px;
+  }
+
+  /* ── UPLOAD QUEUE ───────────────────────────────────────── */
+  .upload-stats {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
+  }
+  .upload-stat {
+    background: var(--bg-primary);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    text-align: center;
+  }
+  .upload-stat-num {
+    font-family: var(--font-mono);
+    font-size: 22px; font-weight: 700;
+  }
+  .upload-stat-label {
+    font-size: 10px; color: var(--text-muted);
+    font-family: var(--font-mono);
+    letter-spacing: 0.5px; text-transform: uppercase;
+    margin-top: 2px;
+  }
+  .stat-queued .upload-stat-num { color: var(--text-secondary); }
+  .stat-uploading .upload-stat-num { color: var(--accent-blue); }
+  .stat-complete .upload-stat-num { color: var(--accent-green); }
+  .stat-failed .upload-stat-num { color: var(--accent-red); }
+
+  /* ── UPLOAD FILE LIST ───────────────────────────────────── */
+  .upload-files {
+    margin-top: 10px;
+    max-height: 180px;
+    overflow-y: auto;
+  }
+  .upload-files::-webkit-scrollbar { width: 3px; }
+  .upload-files::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .upload-file-item {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .upload-file-item:last-child { border-bottom: none; }
+  .upload-file-top {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 5px;
+  }
+  .upload-file-name {
+    font-family: var(--font-mono);
+    font-size: 11px; color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 180px;
+  }
+  .upload-file-pct {
+    font-family: var(--font-mono);
+    font-size: 11px; font-weight: 600;
+    min-width: 42px; text-align: right;
+  }
+  .upload-file-pct.uploading { color: var(--accent-blue); }
+  .upload-file-pct.complete  { color: var(--accent-green); }
+  .upload-file-pct.failed    { color: var(--accent-red); }
+  .upload-file-pct.retrying  { color: var(--accent-orange); }
+  .upload-progress-track {
+    height: 4px; width: 100%;
+    background: var(--bg-primary);
+    border-radius: 2px; overflow: hidden;
+  }
+  .upload-progress-bar {
+    height: 100%; border-radius: 2px;
+    transition: width 0.4s ease;
+    background: var(--accent-blue);
+  }
+  .upload-progress-bar.complete { background: var(--accent-green); }
+  .upload-progress-bar.failed   { background: var(--accent-red); }
+  .upload-file-size {
+    font-family: var(--font-mono);
+    font-size: 10px; color: var(--text-muted);
+    margin-top: 3px;
+  }
+
+  /* ── HISTORY ────────────────────────────────────────────── */
+  .history-list { max-height: 200px; overflow-y: auto; }
+  .history-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .history-item:last-child { border-bottom: none; }
+  .history-id {
+    font-family: var(--font-mono);
+    color: var(--text-primary); font-weight: 500;
+  }
+  .history-meta {
+    color: var(--text-muted); font-size: 11px;
+  }
+  .history-segs {
+    font-family: var(--font-mono);
+    color: var(--accent-green); font-size: 12px; font-weight: 600;
+  }
+
+  /* ── BOTTOM BAR ─────────────────────────────────────────── */
+  .bottom-bar {
+    grid-column: 1;
+  }
+
+  /* ── SETTINGS MODAL ─────────────────────────────────────── */
+  .modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px);
+    z-index: 200; display: none;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    width: 480px; max-width: 90vw;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  .modal-header {
+    padding: 20px 24px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .modal-title {
+    font-family: var(--font-mono);
+    font-size: 14px; font-weight: 600;
+    letter-spacing: 1px; text-transform: uppercase;
+  }
+  .modal-close {
+    width: 30px; height: 30px; border-radius: 6px;
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 16px;
+    cursor: pointer; transition: var(--transition);
+  }
+  .modal-close:hover { background: var(--bg-elevated); color: var(--text-primary); }
+  .modal-body { padding: 20px 24px; }
+  .modal-body .input-group { margin-bottom: 16px; }
+  .modal-footer {
+    padding: 16px 24px 20px;
+    display: flex; justify-content: flex-end; gap: 10px;
+  }
+  .btn-secondary {
+    background: var(--bg-elevated); color: var(--text-secondary);
+    border: 1px solid var(--border);
+  }
+
+  /* ── TOGGLE SWITCH ──────────────────────────────────────── */
+  .toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0;
+  }
+  .toggle-label { font-size: 13px; color: var(--text-secondary); }
+  .toggle {
+    position: relative; width: 44px; height: 24px;
+    background: var(--border); border-radius: 12px;
+    cursor: pointer; transition: var(--transition);
+    border: none; padding: 0;
+  }
+  .toggle::after {
+    content: ''; position: absolute;
+    top: 3px; left: 3px;
+    width: 18px; height: 18px;
+    background: #fff; border-radius: 50%;
+    transition: var(--transition);
+  }
+  .toggle.on { background: var(--accent-blue); }
+  .toggle.on::after { left: 23px; }
+
+  /* ── FRAME CHECK DISPLAY ────────────────────────────────── */
+  .frame-check-display {
+    display: none; padding: 14px;
+    background: var(--bg-primary);
+    border-radius: var(--radius-sm);
+    margin-top: 12px;
+  }
+  .frame-check-display.visible { display: block; }
+  .frame-check-display img {
+    width: 100%; border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+  }
+  .frame-check-result {
+    font-family: var(--font-mono);
+    font-size: 12px; text-align: center;
+    padding: 6px; border-radius: var(--radius-sm);
+  }
+  .fc-pass { background: var(--glow-green); color: var(--accent-green); }
+  .fc-fail { background: var(--glow-red); color: var(--accent-red); }
+
+  /* ── ALERT BEEP ─────────────────────────────────────────── */
+  .alert-flash {
+    animation: flash-border 0.5s ease 3;
+  }
+  @keyframes flash-border {
+    0%,100% { border-color: var(--border); }
+    50% { border-color: var(--accent-red); }
+  }
+
+  /* ── RESPONSIVE ─────────────────────────────────────────── */
+  @media (max-width: 900px) {
+    .main-grid { grid-template-columns: 1fr; }
+    .sidebar { grid-column: 1; grid-row: auto; }
+  }
+
+  /* ── NOISE TEXTURE OVERLAY ──────────────────────────────── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: -1;
+    opacity: 0.03;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 256px;
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════ HEADER ═══════════ -->
+<header>
+  <div class="logo-area">
+    <div class="logo-icon">EC</div>
+    <div>
+      <div class="logo-text">EGOCENTRIC CAPTURE</div>
+      <div class="logo-version">v2.0 — Sequential Session Pipeline</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div id="status-pill" class="status-pill pill-idle">IDLE</div>
+    <button class="settings-btn" onclick="openSettings()" title="Settings">⚙</button>
+  </div>
+</header>
+
+<!-- ═══════════ MAIN GRID ═══════════ -->
+<div class="main-grid">
+
+  <!-- ── OPERATOR ROW ── -->
+  <div class="operator-row">
+    <div class="card operator-card">
+      <div class="card-body" style="padding:14px 18px;">
+        <div class="input-row">
+          <div class="input-group">
+            <label>Operator ID</label>
+            <input type="text" id="operator-id" placeholder="e.g. Jay" autocomplete="off">
+          </div>
+          <div class="input-group">
+            <label>Activity Label</label>
+            <input type="text" id="activity-label" placeholder="e.g. kitchen_cooking" autocomplete="off">
+          </div>
+          <div class="input-group" style="justify-content:flex-end;">
+            <label>&nbsp;</label>
+            <div class="btn-row" style="margin-top:0;">
+              <button class="btn btn-fov" id="btn-fov" onclick="doFOV()">◉ FOV CHECK</button>
+              <button class="btn btn-start" id="btn-start" onclick="doStart()" disabled>▶ START SESSION</button>
+              <button class="btn btn-stop" id="btn-stop" onclick="doStop()" disabled>■ STOP</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── FEED AREA (left) ── -->
+  <div class="feed-area">
+    <!-- Session message -->
+    <div class="session-message" id="session-msg">Ready — run FOV check to begin.</div>
+
+    <!-- Timer -->
+    <div class="timer-display" id="timer">00:00</div>
+    <div class="timer-label" id="timer-label" style="display:none;">
+      SEGMENT <span id="timer-seg-num">1</span> / <span id="timer-seg-total">30</span>
+    </div>
+
+    <!-- FOV Feed -->
+    <div class="card" id="fov-card" style="display:none;">
+      <div class="card-header">
+        <span class="card-title">Live FOV Check</span>
+        <span class="card-badge" id="fov-method">—</span>
+      </div>
+      <div class="card-body" style="padding:0;">
+        <div class="feed-container">
+          <img id="fov-img" src="" alt="FOV Feed" style="display:none;">
+          <div class="feed-placeholder" id="fov-placeholder">
+            <span class="icon">◎</span>
+            Waiting for FOV check...
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Frame Check Display -->
+    <div class="card" id="frame-check-card" style="display:none;">
+      <div class="card-header">
+        <span class="card-title">Inter-Segment Wrist Check</span>
+        <span class="card-badge" id="fc-method">—</span>
+      </div>
+      <div class="card-body" style="padding:0;">
+        <div class="feed-container">
+          <img id="fc-img" src="" alt="Frame Check" style="display:none;">
+          <div class="feed-placeholder" id="fc-placeholder">
+            <span class="icon">✋</span>
+            Next wrist check will appear here
+          </div>
+        </div>
+        <div class="frame-check-result" id="fc-result" style="display:none;margin:12px;">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SIDEBAR (right) ── -->
+  <div class="sidebar">
+
+    <!-- Segment Timeline -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Segment Timeline</span>
+        <span class="card-badge" id="seg-counter">0 / 30</span>
+      </div>
+      <div class="card-body" style="padding: 10px 14px;">
+        <div class="timeline-scroll" id="timeline">
+          <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px 0;">
+            No segments yet
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Upload Queue -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Upload Queue</span>
+        <span class="card-badge" id="upload-total">0 files</span>
+      </div>
+      <div class="card-body">
+        <div class="upload-stats">
+          <div class="upload-stat stat-queued">
+            <div class="upload-stat-num" id="uq-queued">0</div>
+            <div class="upload-stat-label">Queued</div>
+          </div>
+          <div class="upload-stat stat-uploading">
+            <div class="upload-stat-num" id="uq-uploading">0</div>
+            <div class="upload-stat-label">Uploading</div>
+          </div>
+          <div class="upload-stat stat-complete">
+            <div class="upload-stat-num" id="uq-complete">0</div>
+            <div class="upload-stat-label">Done</div>
+          </div>
+          <div class="upload-stat stat-failed">
+            <div class="upload-stat-num" id="uq-failed">0</div>
+            <div class="upload-stat-label">Failed</div>
+          </div>
+        </div>
+        <div id="upload-files" class="upload-files"></div>
+      </div>
+    </div>
+
+    <!-- Session History -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Today's Sessions</span>
+        <span class="card-badge" id="history-count">0</span>
+      </div>
+      <div class="card-body" style="padding: 8px 14px;">
+        <div class="history-list" id="history-list">
+          <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:16px 0;">
+            No sessions today
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── BOTTOM ── -->
+  <div class="bottom-bar"></div>
+</div>
+
+<!-- ═══════════ SETTINGS MODAL ═══════════ -->
+<div class="modal-overlay" id="settings-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Session Settings</span>
+      <button class="modal-close" onclick="closeSettings()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="input-group">
+        <label>Segment Duration (seconds)</label>
+        <input type="number" id="set-seg-dur" value="60" min="10" max="300" step="10">
+      </div>
+      <div class="input-group">
+        <label>Session Duration (seconds)</label>
+        <input type="number" id="set-sess-dur" value="1800" min="60" max="7200" step="60">
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label">MCAP Conversion</span>
+        <button class="toggle" id="set-mcap" onclick="this.classList.toggle('on')"></button>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:var(--text-muted);">
+        When enabled, each segment's .bag file will be converted to .mcap after recording.
+        This adds processing time between segments.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
+      <button class="btn btn-fov" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ AUDIO CONTEXT (alert beep) ═══════════ -->
+<script>
+let audioCtx = null;
+function playAlertBeep() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.frequency.value = 880;
+    gain.gain.value = 0.3;
+    osc.start(); osc.stop(audioCtx.currentTime + 0.15);
+    setTimeout(() => {
+      const osc2 = audioCtx.createOscillator();
+      const gain2 = audioCtx.createGain();
+      osc2.connect(gain2); gain2.connect(audioCtx.destination);
+      osc2.frequency.value = 660;
+      gain2.gain.value = 0.3;
+      osc2.start(); osc2.stop(audioCtx.currentTime + 0.25);
+    }, 200);
+  } catch(e) {}
+}
+</script>
+
+<!-- ═══════════ MAIN LOGIC ═══════════ -->
+<script>
+  // DOM refs
+  const pill       = document.getElementById('status-pill');
+  const msg        = document.getElementById('session-msg');
+  const timerEl    = document.getElementById('timer');
+  const timerLabel = document.getElementById('timer-label');
+  const timerSeg   = document.getElementById('timer-seg-num');
+  const timerTotal = document.getElementById('timer-seg-total');
+  const fovCard    = document.getElementById('fov-card');
+  const fovImg     = document.getElementById('fov-img');
+  const fovPlc     = document.getElementById('fov-placeholder');
+  const fovMethod  = document.getElementById('fov-method');
+  const fcCard     = document.getElementById('frame-check-card');
+  const fcImg      = document.getElementById('fc-img');
+  const fcPlc      = document.getElementById('fc-placeholder');
+  const fcResult   = document.getElementById('fc-result');
+  const fcMethod   = document.getElementById('fc-method');
+  const timeline   = document.getElementById('timeline');
+  const segCounter = document.getElementById('seg-counter');
+  const btnFov     = document.getElementById('btn-fov');
+  const btnStart   = document.getElementById('btn-start');
+  const btnStop    = document.getElementById('btn-stop');
+
+  let segTimer = null;
+  let segSeconds = 60;
+  let lastStatus = 'idle';
+  let maxSegments = 30;
+
+  // ── PILL MAP ─────────────────────────────────────────
+  const pillMap = {
+    idle:                ['IDLE',            'pill-idle'],
+    fov_checking:        ['FOV CHECK',       'pill-fov'],
+    fov_passed:          ['FOV PASSED',      'pill-passed'],
+    fov_failed:          ['FOV FAILED',      'pill-failed'],
+    recording:           ['● RECORDING',     'pill-recording'],
+    converting:          ['CONVERTING',      'pill-converting'],
+    session_active:      ['SESSION ACTIVE',  'pill-session_active'],
+    frame_check:         ['WRIST CHECK',     'pill-frame_check'],
+    wrist_check_failed:  ['WRIST FAIL',      'pill-wrist_check_failed'],
+    complete:            ['✓ COMPLETE',      'pill-complete'],
+    error:               ['ERROR',           'pill-error'],
+  };
+
+  // ── APPLY STATE ──────────────────────────────────────
+  function applyState(s) {
+    const status = s.status || 'idle';
+
+    // Pill
+    const [pillText, pillCls] = pillMap[status] || ['UNKNOWN', 'pill-idle'];
+    pill.textContent = pillText;
+    pill.className = 'status-pill ' + pillCls;
+
+    // Message
+    const message = s.message || '';
+    msg.textContent = message;
+    msg.className = 'session-message';
+    if (status === 'error' || status === 'wrist_check_failed') msg.classList.add('msg-error');
+    else if (status === 'complete' || status === 'fov_passed') msg.classList.add('msg-success');
+    else if (status === 'recording') msg.classList.add('msg-warn');
+
+    // Max segments
+    if (s.max_segments) maxSegments = s.max_segments;
+
+    // FOV stream
+    if (status === 'fov_checking') {
+      fovCard.style.display = 'block';
+      fcCard.style.display = 'none';
+      fovImg.src = '/fov-stream?' + Date.now();
+      fovImg.style.display = 'block';
+      fovPlc.style.display = 'none';
+    } else if (lastStatus === 'fov_checking' && status !== 'fov_checking') {
+      fovImg.src = '';
+      fovImg.style.display = 'none';
+      fovPlc.style.display = 'block';
+      setTimeout(() => { fovCard.style.display = 'none'; }, 3000);
+    }
+    if (s.detection_method) fovMethod.textContent = s.detection_method.toUpperCase();
+
+    // Timer
+    const showTimer = ['recording'].includes(status);
+    timerEl.classList.toggle('visible', showTimer);
+    timerLabel.style.display = showTimer ? 'block' : 'none';
+    if (status === 'recording' && lastStatus !== 'recording') {
+      const segDur = (s.settings && s.settings.segment_duration) || 60;
+      segSeconds = segDur;
+      updateTimer();
+      clearInterval(segTimer);
+      segTimer = setInterval(() => {
+        segSeconds = Math.max(0, segSeconds - 1);
+        updateTimer();
+      }, 1000);
+    } else if (status !== 'recording') {
+      clearInterval(segTimer); segTimer = null;
+    }
+
+    // Current segment info
+    const curSeg = s.current_segment >= 0 ? s.current_segment + 1 : 0;
+    timerSeg.textContent = curSeg;
+    timerTotal.textContent = maxSegments;
+
+    // Frame check
+    if (s.frame_check) {
+      fcCard.style.display = 'block';
+      fovCard.style.display = 'none';
+      fcImg.src = '/frame-check-img?' + Date.now();
+      fcImg.style.display = 'block';
+      fcPlc.style.display = 'none';
+      fcResult.style.display = 'block';
+      fcResult.textContent = s.frame_check.message;
+      fcResult.className = 'frame-check-result ' + (s.frame_check.passed ? 'fc-pass' : 'fc-fail');
+      fcMethod.textContent = (s.frame_check.method || '').toUpperCase();
+
+      if (!s.frame_check.passed) {
+        playAlertBeep();
+        fcCard.classList.add('alert-flash');
+        setTimeout(() => fcCard.classList.remove('alert-flash'), 2000);
+      }
+    }
+
+    // Segment timeline
+    const segments = s.segments || [];
+    renderTimeline(segments, s.current_segment);
+
+    // Upload queue
+    if (s.upload_status) renderUploadStatus(s.upload_status);
+
+    // Buttons
+    const sessionActive = ['recording','converting','session_active','frame_check','wrist_check_failed'].includes(status);
+    btnFov.disabled   = sessionActive || status === 'fov_checking';
+    btnStart.disabled = status !== 'fov_passed';
+    btnStop.disabled  = !sessionActive;
+
+    // Inputs lock during session
+    document.getElementById('operator-id').disabled = sessionActive;
+    document.getElementById('activity-label').disabled = sessionActive;
+
+    // Settings from server
+    if (s.settings) {
+      document.getElementById('operator-id').value = s.settings.operator_id || document.getElementById('operator-id').value;
+      document.getElementById('activity-label').value = s.settings.activity_label || document.getElementById('activity-label').value;
+    }
+
+    // Wrist check fail alert
+    if (status === 'wrist_check_failed' && lastStatus !== 'wrist_check_failed') {
+      playAlertBeep();
+      if (Notification.permission === 'granted') {
+        new Notification('Wrist Check Failed', { body: message, icon: '◎' });
+      }
+    }
+
+    lastStatus = status;
+  }
+
+  function updateTimer() {
+    const m = Math.floor(segSeconds / 60).toString().padStart(2, '0');
+    const s = (segSeconds % 60).toString().padStart(2, '0');
+    timerEl.textContent = m + ':' + s;
+  }
+
+  function renderTimeline(segments, currentSeg) {
+    if (segments.length === 0 && currentSeg < 0) {
+      timeline.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:20px 0;">No segments yet</div>';
+      segCounter.textContent = `0 / ${maxSegments}`;
+      return;
+    }
+
+    const completedCount = segments.filter(s => s.status === 'complete').length;
+    segCounter.textContent = `${completedCount} / ${maxSegments}`;
+
+    // Build timeline rows for all planned segments
+    let html = '';
+    for (let i = 0; i < maxSegments; i++) {
+      const seg = segments.find(s => s.index === i);
+      const status = seg ? seg.status : 'pending';
+      const isActive = i === currentSeg;
+      const wrist = seg && seg.wrist_ok !== null && seg.wrist_ok !== undefined
+        ? (seg.wrist_ok ? '✓' : '✗') : '';
+
+      html += `<div class="seg-row ${isActive ? 'active' : ''}">
+        <div class="seg-dot ${status}"></div>
+        <span class="seg-label">Seg ${(i + 1).toString().padStart(2, '0')}</span>
+        <span class="seg-wrist">${wrist}</span>
+        <span class="seg-status">${status}</span>
+      </div>`;
+
+      // Only render up to a few past current for performance
+      if (i > (currentSeg + 5) && status === 'pending') {
+        html += `<div style="color:var(--text-muted);font-size:11px;text-align:center;padding:6px;">
+          ... ${maxSegments - i - 1} more
+        </div>`;
+        break;
+      }
+    }
+    timeline.innerHTML = html;
+
+    // Auto-scroll to active
+    const active = timeline.querySelector('.seg-row.active');
+    if (active) active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  function renderUploadStatus(us) {
+    document.getElementById('uq-queued').textContent    = (us.queued || 0) + (us.retrying || 0);
+    document.getElementById('uq-uploading').textContent = us.uploading || 0;
+    document.getElementById('uq-complete').textContent  = us.complete || 0;
+    document.getElementById('uq-failed').textContent    = us.failed || 0;
+    document.getElementById('upload-total').textContent  = `${us.total || 0} files`;
+
+    // Per-file progress list (show active + recent)
+    const filesDiv = document.getElementById('upload-files');
+    const items = us.items || [];
+
+    // Show: currently uploading, retrying, failed, and last 3 completed
+    const active = items.filter(i => ['uploading','retrying'].includes(i.status));
+    const failed = items.filter(i => i.status === 'failed');
+    const completed = items.filter(i => i.status === 'complete').slice(-3).reverse();
+    const show = [...active, ...failed, ...completed];
+
+    if (show.length === 0) {
+      filesDiv.innerHTML = '';
+      return;
+    }
+
+    filesDiv.innerHTML = show.map(item => {
+      const pct = item.progress_pct || 0;
+      const sizeMB = item.size_bytes ? (item.size_bytes / 1024 / 1024).toFixed(1) : '?';
+      const uploadedMB = item.bytes_uploaded ? (item.bytes_uploaded / 1024 / 1024).toFixed(1) : '0';
+      const statusCls = item.status;
+      const barCls = item.status === 'complete' ? 'complete' : (item.status === 'failed' ? 'failed' : '');
+
+      let pctText = '';
+      if (item.status === 'uploading')   pctText = pct.toFixed(0) + '%';
+      else if (item.status === 'complete') pctText = '✓';
+      else if (item.status === 'failed')   pctText = '✗';
+      else if (item.status === 'retrying') pctText = 'retry';
+
+      return `<div class="upload-file-item">
+        <div class="upload-file-top">
+          <span class="upload-file-name" title="${item.filename}">${item.filename}</span>
+          <span class="upload-file-pct ${statusCls}">${pctText}</span>
+        </div>
+        <div class="upload-progress-track">
+          <div class="upload-progress-bar ${barCls}" style="width:${item.status === 'complete' ? 100 : pct}%"></div>
+        </div>
+        <div class="upload-file-size">${uploadedMB} / ${sizeMB} MB${item.error ? ' — ' + item.error : ''}</div>
+      </div>`;
+    }).join('');
+  }
+
+  // ── ACTIONS ──────────────────────────────────────────
+  function doFOV() {
+    fetch('/fov-check', { method: 'POST' });
+    // Request notification permission
+    if (Notification.permission === 'default') Notification.requestPermission();
+  }
+
+  function doStart() {
+    const opId  = document.getElementById('operator-id').value.trim();
+    const actLbl = document.getElementById('activity-label').value.trim();
+    if (!opId) { alert('Please enter Operator ID'); return; }
+
+    // Send settings first
+    fetch('/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        operator_id: opId,
+        activity_label: actLbl,
+      })
+    }).then(() => {
+      fetch('/session/start', { method: 'POST' }).then(r => r.json()).then(d => {
+        if (d.error) alert(d.error);
+      });
+    });
+  }
+
+  function doStop() {
+    if (confirm('Stop the current session?')) {
+      fetch('/session/stop', { method: 'POST' });
+    }
+  }
+
+  // ── SETTINGS ─────────────────────────────────────────
+  function openSettings() {
+    document.getElementById('settings-modal').classList.add('open');
+    // Load current
+    fetch('/settings').then(r => r.json()).then(s => {
+      document.getElementById('set-seg-dur').value  = s.segment_duration || 60;
+      document.getElementById('set-sess-dur').value = s.session_duration || 1800;
+      const mcapToggle = document.getElementById('set-mcap');
+      mcapToggle.classList.toggle('on', !!s.mcap_enabled);
+    });
+  }
+
+  function closeSettings() {
+    document.getElementById('settings-modal').classList.remove('open');
+  }
+
+  function saveSettings() {
+    const segDur  = parseInt(document.getElementById('set-seg-dur').value) || 60;
+    const sessDur = parseInt(document.getElementById('set-sess-dur').value) || 1800;
+    const mcap    = document.getElementById('set-mcap').classList.contains('on');
+
+    fetch('/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        segment_duration: segDur,
+        session_duration: sessDur,
+        mcap_enabled: mcap,
+      })
+    }).then(() => closeSettings());
+  }
+
+  // ── HISTORY ──────────────────────────────────────────
+  function loadHistory() {
+    fetch('/history').then(r => r.json()).then(data => {
+      const list = document.getElementById('history-list');
+      const sessions = data.sessions || [];
+      document.getElementById('history-count').textContent = sessions.length;
+
+      if (sessions.length === 0) {
+        list.innerHTML = '<div style="color:var(--text-muted);font-size:12px;text-align:center;padding:16px 0;">No sessions today</div>';
+        return;
+      }
+      list.innerHTML = sessions.map(h => `
+        <div class="history-item">
+          <div>
+            <div class="history-id">${h.session_id}</div>
+            <div class="history-meta">${h.operator_id || '—'} · ${h.activity || '—'} ${h.mcap ? '· MCAP' : ''}</div>
+          </div>
+          <div class="history-segs">${h.segments} seg</div>
+        </div>
+      `).join('');
+    }).catch(() => {});
+  }
+
+  // ── WEBSOCKET ────────────────────────────────────────
+  function connectWS() {
+    const ws = new WebSocket('ws://' + location.host + '/ws');
+    ws.onmessage = e => {
+      try { applyState(JSON.parse(e.data)); } catch(err) { console.error(err); }
+    };
+    ws.onclose = () => setTimeout(connectWS, 2000);
+    ws.onerror = () => ws.close();
+  }
+  connectWS();
+
+  // Initial load
+  fetch('/status').then(r => r.json()).then(applyState).catch(() => {});
+  loadHistory();
+  // Refresh history every 30s
+  setInterval(loadHistory, 30000);
+</script>
+
+</body>
+</html>
