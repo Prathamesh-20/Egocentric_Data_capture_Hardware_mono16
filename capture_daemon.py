@@ -81,50 +81,10 @@ gpio.on_sw1_press = _start_session_from_button
 gpio.on_sw2_press = _stop_session_from_button
 
 
-# ── Inject GPIO into server's session creation ────────────────────
+# ── Inject GPIO into server ───────────────────────────────────────
 def setup_server_gpio_hooks():
     from capture.ui import server as srv
-
-    _original_start = srv.start_session
-
-    def _patched_start_session():
-        _original_cls = srv.SessionV2
-
-        class PatchedSessionV2(_original_cls):
-            def __init__(self, **kwargs):
-                kwargs['gpio'] = gpio
-                super().__init__(**kwargs)
-
-        srv.SessionV2 = PatchedSessionV2
-        result = _original_start()
-        srv.SessionV2 = _original_cls
-
-        # Start upload monitor when session starts
-        if srv._session and srv._session.is_running():
-            _original_on_complete = srv._session.on_complete
-
-            def _wrapped_on_complete(session_id, n_segments, manifest):
-                if _original_on_complete:
-                    _original_on_complete(session_id, n_segments, manifest)
-
-                # GPIO: switch to uploading (red blink)
-                if gpio.available:
-                    gpio.set_uploading()
-
-                # Start monitoring uploads in background
-                if not _upload_monitor_active.is_set():
-                    _upload_monitor_active.set()
-                    threading.Thread(
-                        target=_monitor_uploads,
-                        args=(srv._upload_queue,),
-                        daemon=True
-                    ).start()
-
-            srv._session.on_complete = _wrapped_on_complete
-
-        return result
-
-    srv.start_session = _patched_start_session
+    srv._gpio = gpio
 
 
 # ── Shutdown ──────────────────────────────────────────────────────

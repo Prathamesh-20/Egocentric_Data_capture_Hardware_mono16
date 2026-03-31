@@ -36,6 +36,7 @@ from capture.pipeline.uploader import UploadQueue
 
 log = logging.getLogger(__name__)
 app = FastAPI()
+_gpio = None
 
 # ── Runtime settings (mutable from UI) ────────────────────────────
 settings = {
@@ -199,9 +200,10 @@ def start_session():
         mcap_enabled=settings["mcap_enabled"],
         on_state_change=_on_state,
         on_segment_update=_on_segment_update,
-        on_frame_check=None,  # no frame checks in simplified mode
+        on_frame_check=None,
         on_complete=_on_complete,
         upload_queue=_upload_queue,
+        gpio=_gpio,
     )
     _session.start()
     return {"ok": True, "session_id": _session.session_id}
