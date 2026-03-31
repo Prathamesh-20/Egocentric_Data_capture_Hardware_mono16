@@ -22,7 +22,7 @@ from typing import Optional, Callable, Dict, List
 
 from capture.config import (
     OUTPUT_DIR, ORBBEC_REC, ORBBEC_LIB,
-    FPS, SEGMENT_DURATION, SESSION_DURATION,
+    FPS, SEGMENT_DURATION, SESSION_DURATION, SEGMENT_GAP,
 )
 from capture.cameras.orbbec import OrbbecRecorder
 
@@ -55,7 +55,8 @@ class SessionV2:
                  on_segment_update: Callable = None,
                  on_frame_check: Callable = None,
                  on_complete: Callable = None,
-                 upload_queue = None):
+                 upload_queue = None,
+                 gpio = None):
 
         self.operator_id      = operator_id
         self.activity_label   = activity_label
@@ -68,6 +69,7 @@ class SessionV2:
         self.on_frame_check   = on_frame_check   # kept for API compat, not called
         self.on_complete      = on_complete
         self.upload_queue     = upload_queue
+        self.gpio             = gpio
 
         self._stop       = threading.Event()
         self._thread     = None
@@ -141,6 +143,11 @@ class SessionV2:
                 break
             actual_duration = min(self.segment_duration, remaining)
 
+            # ── GPIO: Segment starting — buzzer 1x, green blink ───────
+            if self.gpio:
+                self.gpio.beep_1x()
+                self.gpio.set_recording()
+
             # ── Record segment ────────────────────────────────────────
             seg.status = "recording"
             seg.start_time = time.time()
@@ -161,13 +168,17 @@ class SessionV2:
             if not bag_ok:
                 seg.status = "failed"
                 self._notify_segment(seg)
-                # Log USB diagnostics on failure
                 self._log_usb_power_diagnostics(seg_idx)
                 log.error(f"Segment {seg_idx} FAILED — bag file is empty/corrupt. "
                           f"Possible USB power issue. Waiting 5s before next segment...")
-                time.sleep(5)  # let USB bus recover
+                time.sleep(5)
                 seg_idx += 1
                 continue
+
+            # ── GPIO: Segment complete — green solid, buzzer 2x ───────
+            if self.gpio:
+                self.gpio.set_segment_gap()
+                self.gpio.beep_2x()
 
             seg.status = "uploading"
             self._notify_segment(seg)
@@ -181,9 +192,20 @@ class SessionV2:
 
             seg_idx += 1
 
+            # ── Inter-segment gap (5 seconds) ─────────────────────────
+            if (not self._stop.is_set()
+                    and time.time() < session_deadline
+                    and seg_idx < self.max_segments):
+                log.info(f"Waiting {SEGMENT_GAP}s before next segment...")
+                self._stop.wait(timeout=SEGMENT_GAP)
+
         # ── Session complete ──────────────────────────────────────────
         elapsed = time.time() - session_start
         n_complete = sum(1 for s in self.segments if s.status == "complete")
+
+        # GPIO: Session done recording — switch to uploading indicator
+        if self.gpio:
+            self.gpio.set_uploading()
 
         # Write session manifest
         n_failed = sum(1 for s in self.segments if s.status == "failed")
@@ -279,12 +301,6 @@ class SessionV2:
             self.on_segment_update(seg.index, seg.status, seg.wrist_ok)
 
     def _validate_bag(self, bag_path: str, seg_idx: int, duration: float) -> bool:
-        """
-        Check if the .bag file is a reasonable size.
-        At 30fps RGB(1280x800) + Depth(1280x800), expect ~15-20 MB/sec.
-        A 60s segment should be roughly 900MB-1.2GB.
-        Anything under 1MB for a 60s recording means the USB device reset.
-        """
         if not bag_path or not os.path.exists(bag_path):
             log.error(f"Segment {seg_idx}: bag file does not exist: {bag_path}")
             return False
@@ -292,8 +308,7 @@ class SessionV2:
         size_bytes = os.path.getsize(bag_path)
         size_mb = size_bytes / (1024 * 1024)
 
-        # Minimum expected: ~1MB per second of recording (very conservative)
-        min_expected_mb = max(duration * 1.0, 10)  # at least 10MB for any segment
+        min_expected_mb = max(duration * 1.0, 10)
 
         log.info(f"Segment {seg_idx} bag size: {size_mb:.1f} MB "
                  f"(expected ≥ {min_expected_mb:.0f} MB for {duration:.0f}s recording)")
@@ -314,22 +329,16 @@ class SessionV2:
             self._state("bag_small_warning",
                         f"Segment {seg_idx + 1}: bag only {size_mb:.1f} MB "
                         f"(expected ≥ {min_expected_mb:.0f} MB) — partial recording?")
-            # Still return True for small-but-not-empty bags
             return True
 
         log.info(f"Segment {seg_idx} bag validation PASSED: {size_mb:.1f} MB")
         return True
 
     def _log_usb_power_diagnostics(self, seg_idx: int):
-        """
-        Log USB bus and power info to help diagnose empty bag files.
-        Runs lsusb, checks dmesg for USB errors, and reads throttle state.
-        """
         import subprocess
 
         log.info(f"=== USB/POWER DIAGNOSTICS for segment {seg_idx} ===")
 
-        # 1. Check for USB device resets in dmesg (last 30 lines with USB)
         try:
             result = subprocess.run(
                 ["dmesg"], capture_output=True, text=True, timeout=5)
@@ -345,34 +354,22 @@ class SessionV2:
         except Exception as e:
             log.warning(f"  Could not read dmesg: {e}")
 
-        # 2. Check Pi throttle status (under-voltage, frequency capped, etc.)
         try:
             result = subprocess.run(
                 ["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=5)
             throttle = result.stdout.strip()
             log.info(f"  Throttle status: {throttle}")
-
-            # Decode throttle bits
             if "throttled=0x" in throttle:
                 hex_val = int(throttle.split("=")[1], 16)
                 if hex_val & 0x1:
-                    log.error("  ⚡ UNDER-VOLTAGE DETECTED RIGHT NOW!")
-                if hex_val & 0x2:
-                    log.warning("  ARM frequency capped")
-                if hex_val & 0x4:
-                    log.warning("  Currently throttled")
+                    log.error("  UNDER-VOLTAGE DETECTED RIGHT NOW!")
                 if hex_val & 0x10000:
-                    log.error("  ⚡ UNDER-VOLTAGE HAS OCCURRED since boot!")
-                if hex_val & 0x20000:
-                    log.warning("  ARM frequency capping has occurred since boot")
-                if hex_val & 0x40000:
-                    log.warning("  Throttling has occurred since boot")
+                    log.error("  UNDER-VOLTAGE HAS OCCURRED since boot!")
                 if hex_val == 0:
                     log.info("  Power supply looks healthy — no throttle flags")
         except Exception as e:
             log.warning(f"  Could not check throttle: {e}")
 
-        # 3. List USB devices to confirm Orbbec is still connected
         try:
             result = subprocess.run(
                 ["lsusb"], capture_output=True, text=True, timeout=5)
@@ -382,11 +379,9 @@ class SessionV2:
                 log.info(f"  Orbbec USB device found: {orbbec_lines[0].strip()}")
             else:
                 log.error("  Orbbec USB device NOT FOUND — device disconnected/reset!")
-                log.info(f"  All USB devices:\n{result.stdout}")
         except Exception as e:
             log.warning(f"  Could not run lsusb: {e}")
 
-        # 4. Check USB power info if available
         try:
             for bus_dir in sorted(Path("/sys/bus/usb/devices/").glob("usb*")):
                 power_file = bus_dir / "power" / "runtime_status"

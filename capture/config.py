@@ -38,9 +38,16 @@ MIN_REGION_PX   = 800
 MIN_REGIONS     = 2
 
 # ── GPIO pins ─────────────────────────────────────────────────────
-PIN_FOV_CHECK = 17
-PIN_START_REC = 27
-DEBOUNCE_S    = 0.05
+# ── GPIO pins (NAYAA Hat Rev 2) ───────────────────────────────────
+PIN_SW1       = 17    # Start session button (Pin 11)
+PIN_SW2       = 27    # Stop session button (Pin 13)
+PIN_LED_GREEN = 22    # L1 — Green LED (Pin 15)
+PIN_LED_RED   = 5     # L2 — Red LED (Pin 29)
+PIN_BUZZER    = 26    # Buzzer (Pin 37)
+DEBOUNCE_S    = 0.3   # button debounce (300ms)
+
+# Inter-segment gap
+SEGMENT_GAP   = 5     # seconds to wait between segments
 
 # ── Web UI ────────────────────────────────────────────────────────
 UI_HOST = "0.0.0.0"
