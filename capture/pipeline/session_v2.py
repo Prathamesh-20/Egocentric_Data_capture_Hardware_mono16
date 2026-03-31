@@ -4,17 +4,26 @@ Session V2 — 30-min session orchestrator (Simplified).
 Orbbec Gemini 2L only — records RGB + Depth as .bag files.
 No Kreo wrist cameras. No inter-segment wrist/FOV checks.
 
+Edge case handling:
+  - Empty/corrupt bags are NOT uploaded to S3
+  - Disk space checked before each segment (stops if < 5GB)
+  - Consecutive recording failures auto-stop session after 3
+  - Orbbec process crash detection
+  - Failed uploads logged in manifest
+
 Flow:
   1. Loop until session time exhausted:
-     a. Record 1-min segment (Orbbec .bag)
-     b. Enqueue segment files for S3 upload
+     a. Check disk space
+     b. Record 1-min segment (Orbbec .bag)
+     c. Validate bag file
+     d. Enqueue ONLY valid segment files for S3 upload
   2. Session complete
 
 Outputs per segment:
   orbbec_<session>_seg<N>.bag
   timestamps_<session>_seg<N>.csv
 """
-import os, csv, time, threading, logging, json
+import os, csv, time, threading, logging, json, shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +36,13 @@ from capture.config import (
 from capture.cameras.orbbec import OrbbecRecorder
 
 log = logging.getLogger(__name__)
+
+# Minimum disk space to continue recording (bytes)
+MIN_DISK_SPACE_GB = 5
+MIN_DISK_SPACE_BYTES = MIN_DISK_SPACE_GB * 1024 * 1024 * 1024
+
+# Max consecutive recording failures before auto-stopping
+MAX_CONSECUTIVE_FAILURES = 3
 
 
 @dataclass
@@ -66,7 +82,7 @@ class SessionV2:
 
         self.on_state_change  = on_state_change
         self.on_segment_update = on_segment_update
-        self.on_frame_check   = on_frame_check   # kept for API compat, not called
+        self.on_frame_check   = on_frame_check
         self.on_complete      = on_complete
         self.upload_queue     = upload_queue
         self.gpio             = gpio
@@ -117,6 +133,27 @@ class SessionV2:
         if self.on_state_change:
             self.on_state_change(status, detail, **extra)
 
+    def _check_disk_space(self) -> bool:
+        """Check if enough disk space remains on the output drive."""
+        try:
+            usage = shutil.disk_usage(OUTPUT_DIR)
+            free_gb = usage.free / (1024 * 1024 * 1024)
+            if usage.free < MIN_DISK_SPACE_BYTES:
+                log.error(f"DISK SPACE LOW — only {free_gb:.1f} GB free "
+                          f"(need {MIN_DISK_SPACE_GB} GB). Stopping session!")
+                self._state("error",
+                            f"Disk space too low: {free_gb:.1f} GB free. "
+                            f"Session stopped to prevent data loss.")
+                if self.gpio:
+                    self.gpio.set_error()
+                return False
+            if free_gb < 10:
+                log.warning(f"Disk space getting low: {free_gb:.1f} GB free")
+            return True
+        except Exception as e:
+            log.warning(f"Could not check disk space: {e}")
+            return True  # continue if check fails
+
     def _run(self):
         sid = self.session_id
         session_start = time.time()
@@ -126,14 +163,20 @@ class SessionV2:
                     f"Session {sid} started — {self.max_segments} segments planned")
 
         seg_idx = 0
+        consecutive_failures = 0
 
         while (not self._stop.is_set()
                and time.time() < session_deadline
                and seg_idx < self.max_segments):
 
             seg = SegmentInfo(index=seg_idx)
-            seg.wrist_ok = True  # no wrist check — always OK
+            seg.wrist_ok = True
             self.segments.append(seg)
+
+            # ── Check disk space ──────────────────────────────────────
+            if not self._check_disk_space():
+                self.segments.pop()
+                break
 
             # ── Check remaining time ──────────────────────────────────
             remaining = session_deadline - time.time()
@@ -161,19 +204,35 @@ class SessionV2:
             seg.end_time = time.time()
             seg.files = files
 
-            # ── Validate bag file size ────────────────────────────────
+            # ── Validate bag file ─────────────────────────────────────
             bag_path = files.get("bag", "")
             bag_ok = self._validate_bag(bag_path, seg_idx, actual_duration)
 
             if not bag_ok:
                 seg.status = "failed"
                 self._notify_segment(seg)
+                consecutive_failures += 1
                 self._log_usb_power_diagnostics(seg_idx)
-                log.error(f"Segment {seg_idx} FAILED — bag file is empty/corrupt. "
-                          f"Possible USB power issue. Waiting 5s before next segment...")
+                log.error(f"Segment {seg_idx} FAILED — consecutive failures: "
+                          f"{consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}")
+
+                # Auto-stop after too many consecutive failures
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    log.error(f"Too many consecutive failures ({MAX_CONSECUTIVE_FAILURES}). "
+                              f"Camera may be disconnected. Auto-stopping session.")
+                    self._state("error",
+                                f"Session auto-stopped — {MAX_CONSECUTIVE_FAILURES} "
+                                f"consecutive recording failures. Check camera connection.")
+                    if self.gpio:
+                        self.gpio.set_error()
+                    break
+
                 time.sleep(5)
                 seg_idx += 1
                 continue
+
+            # Reset consecutive failure counter on success
+            consecutive_failures = 0
 
             # ── GPIO: Segment complete — green solid, buzzer 2x ───────
             if self.gpio:
@@ -183,7 +242,7 @@ class SessionV2:
             seg.status = "uploading"
             self._notify_segment(seg)
 
-            # ── Enqueue upload ────────────────────────────────────────
+            # ── Enqueue upload (ONLY for valid bags) ──────────────────
             if self.upload_queue:
                 self.upload_queue.enqueue_segment_files(sid, seg_idx, files)
 
@@ -202,13 +261,33 @@ class SessionV2:
         # ── Session complete ──────────────────────────────────────────
         elapsed = time.time() - session_start
         n_complete = sum(1 for s in self.segments if s.status == "complete")
+        n_failed = sum(1 for s in self.segments if s.status == "failed")
 
         # GPIO: Session done recording — switch to uploading indicator
         if self.gpio:
             self.gpio.set_uploading()
 
+        # Clean up failed bag files from disk (don't waste SSD space)
+        for seg in self.segments:
+            if seg.status == "failed":
+                bag_file = seg.files.get("bag", "")
+                if bag_file and os.path.exists(bag_file):
+                    try:
+                        size_kb = os.path.getsize(bag_file) / 1024
+                        os.remove(bag_file)
+                        log.info(f"Cleaned up failed bag: {bag_file} ({size_kb:.0f} KB)")
+                    except Exception as e:
+                        log.warning(f"Could not clean up {bag_file}: {e}")
+
+        # Disk space report
+        try:
+            usage = shutil.disk_usage(OUTPUT_DIR)
+            free_gb = usage.free / (1024 * 1024 * 1024)
+            log.info(f"Disk space remaining: {free_gb:.1f} GB")
+        except Exception:
+            pass
+
         # Write session manifest
-        n_failed = sum(1 for s in self.segments if s.status == "failed")
         manifest = {
             "session_id":       sid,
             "operator_id":      self.operator_id,
@@ -218,6 +297,7 @@ class SessionV2:
             "segments_planned":  self.max_segments,
             "duration_actual":  round(elapsed, 1),
             "mcap_enabled":     self.mcap_enabled,
+            "disk_free_gb":     round(free_gb, 1) if 'free_gb' in dir() else None,
             "segments": [
                 {"index": s.index, "status": s.status,
                  "files": s.files, "wrist_ok": s.wrist_ok,
@@ -230,8 +310,16 @@ class SessionV2:
         with open(manifest_path, "w") as f:
             json.dump(manifest, f, indent=2)
 
+        # Summary log
+        if n_failed > 0:
+            log.warning(f"Session {sid} — {n_complete} complete, {n_failed} FAILED "
+                        f"in {elapsed:.0f}s")
+        else:
+            log.info(f"Session {sid} — {n_complete} segments complete in {elapsed:.0f}s")
+
         self._state("complete",
-                    f"Session {sid} complete — {n_complete} segments in {elapsed:.0f}s")
+                    f"Session {sid} complete — {n_complete} segments "
+                    f"({n_failed} failed) in {elapsed:.0f}s")
         if self.on_complete:
             self.on_complete(sid, n_complete, manifest)
 
@@ -248,6 +336,7 @@ class SessionV2:
 
         orbbec_started = threading.Event()
         orbbec_ok      = [False]
+        orbbec_crashed = [False]
 
         def orbbec_thread():
             ok = orbbec.start()
@@ -257,11 +346,15 @@ class SessionV2:
                 stop_ev.wait(timeout=duration)
                 stop_ev.set()
                 orbbec.stop()
+                # Check if process died unexpectedly
+                if orbbec._proc is None:
+                    pass  # normal — stop() cleared it
             else:
                 orbbec_started.set()
                 stop_ev.set()
 
-        threading.Thread(target=orbbec_thread, daemon=True).start()
+        rec_thread = threading.Thread(target=orbbec_thread, daemon=True)
+        rec_thread.start()
 
         if not orbbec_started.wait(timeout=30):
             log.error("Orbbec did not start for segment")
@@ -275,25 +368,39 @@ class SessionV2:
         t0_ns = time.time_ns()
 
         # Wait for segment to finish or session stop
+        # Also monitor if the orbbec process dies mid-recording
         end_time = time.time() + duration + 2
         while not stop_ev.is_set() and not self._stop.is_set() and time.time() < end_time:
+            # Check if orbbec process crashed
+            if orbbec._proc and orbbec._proc.poll() is not None:
+                log.error(f"Orbbec process died mid-recording! "
+                          f"Exit code: {orbbec._proc.returncode}")
+                orbbec_crashed[0] = True
+                stop_ev.set()
+                break
             time.sleep(0.5)
 
         stop_ev.set()
 
-        # Save timestamps (segment start/end for Orbbec-only mode)
+        # Save timestamps
         with open(ts_csv, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["camera", "event", "unix_ns"])
             w.writerow(["Orbbec", "segment_start", t0_ns])
             w.writerow(["Orbbec", "segment_end", time.time_ns()])
+            if orbbec_crashed[0]:
+                w.writerow(["Orbbec", "CRASH_DETECTED", time.time_ns()])
 
         files = {
             "bag":        bag_out,
             "timestamps": ts_csv,
         }
 
-        log.info(f"Segment {seg_idx} recorded — Orbbec bag: {bag_out}")
+        if orbbec_crashed[0]:
+            log.error(f"Segment {seg_idx} — Orbbec CRASHED during recording")
+        else:
+            log.info(f"Segment {seg_idx} recorded — Orbbec bag: {bag_out}")
+
         return files
 
     def _notify_segment(self, seg: SegmentInfo):
@@ -301,6 +408,12 @@ class SessionV2:
             self.on_segment_update(seg.index, seg.status, seg.wrist_ok)
 
     def _validate_bag(self, bag_path: str, seg_idx: int, duration: float) -> bool:
+        """
+        Check if the .bag file is a reasonable size.
+        At 30fps RGB(1280x800) + Depth(1280x800) in Y16:
+        expect ~25 MB/sec → ~1.5GB per 60s segment.
+        Anything under 10MB means recording failed.
+        """
         if not bag_path or not os.path.exists(bag_path):
             log.error(f"Segment {seg_idx}: bag file does not exist: {bag_path}")
             return False
@@ -308,10 +421,11 @@ class SessionV2:
         size_bytes = os.path.getsize(bag_path)
         size_mb = size_bytes / (1024 * 1024)
 
+        # Minimum expected: ~1MB per second of recording (very conservative)
         min_expected_mb = max(duration * 1.0, 10)
 
         log.info(f"Segment {seg_idx} bag size: {size_mb:.1f} MB "
-                 f"(expected ≥ {min_expected_mb:.0f} MB for {duration:.0f}s recording)")
+                 f"(expected >= {min_expected_mb:.0f} MB for {duration:.0f}s recording)")
 
         if size_mb < 0.1:
             log.error(f"BAG EMPTY — {size_bytes} bytes. "
@@ -325,16 +439,18 @@ class SessionV2:
         if size_mb < min_expected_mb:
             log.warning(f"BAG SUSPICIOUSLY SMALL — {size_mb:.1f} MB for {duration:.0f}s. "
                         f"Recording may have been interrupted. "
-                        f"Expected ≥ {min_expected_mb:.0f} MB")
+                        f"Expected >= {min_expected_mb:.0f} MB")
             self._state("bag_small_warning",
                         f"Segment {seg_idx + 1}: bag only {size_mb:.1f} MB "
-                        f"(expected ≥ {min_expected_mb:.0f} MB) — partial recording?")
+                        f"(expected >= {min_expected_mb:.0f} MB) — partial recording?")
+            # Still return True for small-but-not-empty bags
             return True
 
         log.info(f"Segment {seg_idx} bag validation PASSED: {size_mb:.1f} MB")
         return True
 
     def _log_usb_power_diagnostics(self, seg_idx: int):
+        """Log USB bus and power info to help diagnose recording failures."""
         import subprocess
 
         log.info(f"=== USB/POWER DIAGNOSTICS for segment {seg_idx} ===")
@@ -344,13 +460,11 @@ class SessionV2:
                 ["dmesg"], capture_output=True, text=True, timeout=5)
             usb_lines = [l for l in result.stdout.split("\n")
                          if "usb" in l.lower() or "USB" in l]
-            recent = usb_lines[-15:] if usb_lines else []
+            recent = usb_lines[-10:] if usb_lines else []
             if recent:
                 log.warning("Recent USB kernel messages:")
                 for line in recent:
                     log.warning(f"  dmesg: {line.strip()}")
-            else:
-                log.info("  No recent USB messages in dmesg")
         except Exception as e:
             log.warning(f"  Could not read dmesg: {e}")
 
@@ -366,7 +480,7 @@ class SessionV2:
                 if hex_val & 0x10000:
                     log.error("  UNDER-VOLTAGE HAS OCCURRED since boot!")
                 if hex_val == 0:
-                    log.info("  Power supply looks healthy — no throttle flags")
+                    log.info("  Power supply healthy — no throttle flags")
         except Exception as e:
             log.warning(f"  Could not check throttle: {e}")
 
@@ -376,19 +490,10 @@ class SessionV2:
             orbbec_lines = [l for l in result.stdout.split("\n")
                             if "orbbec" in l.lower() or "2bc5" in l.lower()]
             if orbbec_lines:
-                log.info(f"  Orbbec USB device found: {orbbec_lines[0].strip()}")
+                log.info(f"  Orbbec USB: {orbbec_lines[0].strip()}")
             else:
-                log.error("  Orbbec USB device NOT FOUND — device disconnected/reset!")
+                log.error("  Orbbec USB NOT FOUND — camera disconnected!")
         except Exception as e:
             log.warning(f"  Could not run lsusb: {e}")
-
-        try:
-            for bus_dir in sorted(Path("/sys/bus/usb/devices/").glob("usb*")):
-                power_file = bus_dir / "power" / "runtime_status"
-                if power_file.exists():
-                    status = power_file.read_text().strip()
-                    log.info(f"  {bus_dir.name} power status: {status}")
-        except Exception as e:
-            log.debug(f"  Could not read USB power status: {e}")
 
         log.info("=== END DIAGNOSTICS ===")

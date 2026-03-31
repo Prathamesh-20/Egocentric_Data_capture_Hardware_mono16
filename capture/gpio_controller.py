@@ -106,6 +106,16 @@ class GPIOController:
             self.set_idle()
             log.info("[GPIO] Uploads done, back to IDLE")
         threading.Thread(target=_auto_idle, daemon=True).start()
+
+    def set_error(self):
+        """ERROR state — both LEDs blink together + buzzer 3x.
+        Operator should stop and report to the team."""
+        self._green_mode = "blink"
+        self._red_mode = "blink"
+        self._buzzer_mode = "off"
+        self.beep(count=3, on_time=0.3, off_time=0.2)
+        log.info("[GPIO] State: ERROR — Both LEDs BLINK + Buzzer 3x")
+    
         
     def all_off(self):
         self._green_mode = "off"
