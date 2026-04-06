@@ -67,7 +67,11 @@ _state_lock            = threading.Lock()
 def local_post(path: str, json: dict = None) -> dict:
     try:
         r = requests.post(f"{LOCAL_URL}{path}", json=json, timeout=5)
-        return r.json() if r.status_code == 200 else {}
+        if r.status_code in (200, 201):
+            return r.json()
+        else:
+            log.warning(f"Local POST {path} returned {r.status_code}: {r.text}")
+            return {}
     except Exception as e:
         log.error(f"Local POST failed ({path}): {e}")
         return {}
@@ -135,10 +139,10 @@ def handle_start(data: dict):
     })
 
     result = local_post("/session/start")
-    if result.get("ok") or result.get("session_id"):
+    if result:  # kuch bhi aaya toh success
         with _state_lock:
             _session_active = True
-        log.info(f"Session started: {result.get('session_id')}")
+        log.info(f"Session started: {result.get('session_id', 'unknown')}")
     else:
         log.error(f"Session start failed: {result}")
 
