@@ -2,13 +2,13 @@
 Description=App Backend Polling Agent for %i
 After=network-online.target capture-daemon@%i.service
 Wants=network-online.target
-# Specific dependency on the daemon of the SAME user
 Requires=capture-daemon@%i.service
 
 [Service]
 Type=simple
 User=%i
 WorkingDirectory=/home/%i/Egocentric_Data_capture_Hardware_mono16
+Environment="PYTHONPATH=/home/%i/Egocentric_Data_capture_Hardware_mono16"
 EnvironmentFile=/home/%i/Egocentric_Data_capture_Hardware_mono16/.env.polling
 ExecStart=/usr/bin/python3 /home/%i/Egocentric_Data_capture_Hardware_mono16/polling_agent.py
 Restart=always
