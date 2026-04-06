@@ -1,21 +1,5 @@
 """
 FastAPI backend V2 — Simplified for Orbbec-only recording.
-
-FOV check is kept as optional but NOT required to start a session.
-No Kreo camera references. No wrist detection gating.
-
-Endpoints:
-  GET  /                → UI dashboard
-  POST /fov-check       → start optional FOV check
-  GET  /fov-stream      → MJPEG stream of FOV check
-  POST /session/start   → start 30-min session (no FOV required)
-  POST /session/stop    → stop session early
-  GET  /status          → full state JSON
-  GET  /upload-status   → upload queue status
-  GET  /history         → today's session history
-  POST /settings        → update runtime settings
-  GET  /settings        → get current settings
-  WS   /ws              → real-time state updates
 """
 import asyncio, json, logging, threading, time, os, glob
 from pathlib import Path
@@ -36,39 +20,38 @@ from capture.pipeline.uploader import UploadQueue
 
 log = logging.getLogger(__name__)
 app = FastAPI()
-_gpio = None
 
-# ── Runtime settings (mutable from UI) ────────────────────────────
+# ── Runtime settings ──────────────────────────────────────────────
 settings = {
     "segment_duration": SEGMENT_DURATION,
     "session_duration": SESSION_DURATION,
     "mcap_enabled":     MCAP_ENABLED_DEFAULT,
     "operator_id":      "",
+    "operator_name":    "",   # ← added: set by polling_agent on start command
+    "task_id":          "",   # ← added: set by polling_agent on start command
     "activity_label":   "",
 }
 
 # ── Global state ──────────────────────────────────────────────────
 state = {
-    "status":          "idle",
-    "message":         "Ready — press Start to begin recording",
-    "fov_result":      None,
-    "session_id":      None,
-    "current_segment": -1,
-    "max_segments":    SESSION_DURATION // SEGMENT_DURATION,
-    "segments":        [],
-    "progress":        0,
-    "frame_check":     None,
+    "status":           "idle",
+    "message":          "Ready — press Start to begin recording",
+    "fov_result":       None,
+    "session_id":       None,
+    "current_segment":  -1,
+    "max_segments":     SESSION_DURATION // SEGMENT_DURATION,
+    "segments":         [],
+    "progress":         0,
+    "frame_check":      None,
     "detection_method": None,
 }
 
-_session:          Optional[SessionV2]    = None
-_ws_clients        = set()
-_ws_lock           = threading.Lock()
-
-_upload_queue = UploadQueue()
-
-# ── Session history ───────────────────────────────────────────────
+_session:        Optional[SessionV2] = None
+_ws_clients      = set()
+_ws_lock         = threading.Lock()
+_upload_queue    = UploadQueue()
 _session_history = []
+_gpio            = None   # injected by capture_daemon via setup_server_gpio_hooks()
 
 
 def _set_state(**kwargs):
@@ -77,18 +60,16 @@ def _set_state(**kwargs):
 
 
 def _broadcast():
-    """Push state + upload status to all WebSocket clients."""
     data = state.copy()
     data["upload_status"] = _upload_queue.get_status()
     data["settings"]      = settings.copy()
-
     msg = json.dumps(data, default=str)
     with _ws_lock:
         dead = set()
         for ws in _ws_clients:
             try:
                 asyncio.run_coroutine_threadsafe(ws.send_text(msg), _loop)
-            except:
+            except Exception:
                 dead.add(ws)
         _ws_clients.difference_update(dead)
 
@@ -120,21 +101,20 @@ async def websocket_endpoint(ws: WebSocket):
 @app.post("/fov-check")
 def start_fov_check():
     if not FOV_CHECK_ENABLED:
-        _set_state(status="fov_passed", message="FOV check disabled — ready to record",
+        _set_state(status="fov_passed",
+                   message="FOV check disabled — ready to record",
                    fov_result="FOV check disabled")
         return {"ok": True, "message": "FOV check disabled, ready to record"}
 
     if state["status"] in ("recording", "converting", "session_active", "frame_check"):
         return JSONResponse({"error": "Cannot run FOV check during active session"}, 400)
 
-    # If FOV check were enabled, the original FOVChecker logic would go here
     _set_state(status="fov_passed", message="FOV check skipped", fov_result="skipped")
     return {"ok": True}
 
 
 @app.get("/fov-stream")
 def fov_stream():
-    """MJPEG stream placeholder — FOV check disabled."""
     return JSONResponse({"message": "FOV check disabled"}, 200)
 
 
@@ -143,7 +123,6 @@ def fov_stream():
 def start_session():
     global _session
 
-    # Allow starting from idle, fov_passed, or complete states
     if state["status"] in ("recording", "session_active", "frame_check"):
         return JSONResponse({"error": "Session already running"}, 400)
 
@@ -153,7 +132,6 @@ def start_session():
     if not settings["operator_id"].strip():
         return JSONResponse({"error": "Operator ID required"}, 400)
 
-    # Start upload queue
     _upload_queue.on_status_change = lambda s: _broadcast()
     _upload_queue.start()
 
@@ -162,11 +140,11 @@ def start_session():
         _set_state(status=status, message=detail, current_segment=seg_idx)
 
     def _on_segment_update(seg_idx, seg_status, wrist_ok):
-        segs = state.get("segments", [])
+        segs  = state.get("segments", [])
         found = False
         for s in segs:
             if s["index"] == seg_idx:
-                s["status"] = seg_status
+                s["status"]   = seg_status
                 s["wrist_ok"] = wrist_ok
                 found = True
                 break
@@ -187,23 +165,21 @@ def start_session():
                    message=f"Session {session_id} — {n_segments} segments complete")
 
     max_segs = settings["session_duration"] // settings["segment_duration"]
-    _set_state(
-        segments=[], current_segment=-1, max_segments=max_segs,
-        frame_check=None,
-    )
+    _set_state(segments=[], current_segment=-1, max_segments=max_segs, frame_check=None)
 
     _session = SessionV2(
-        operator_id=settings["operator_id"],
-        activity_label=settings["activity_label"],
-        segment_duration=settings["segment_duration"],
-        session_duration=settings["session_duration"],
-        mcap_enabled=settings["mcap_enabled"],
-        on_state_change=_on_state,
-        on_segment_update=_on_segment_update,
-        on_frame_check=None,
-        on_complete=_on_complete,
-        upload_queue=_upload_queue,
-        gpio=_gpio,
+        operator_id      = settings["operator_id"],
+        operator_name    = settings["operator_name"],   # ← passed through
+        task_id          = settings["task_id"],         # ← passed through
+        activity_label   = settings["activity_label"],
+        segment_duration = settings["segment_duration"],
+        session_duration = settings["session_duration"],
+        mcap_enabled     = settings["mcap_enabled"],
+        on_state_change  = _on_state,
+        on_segment_update= _on_segment_update,
+        on_frame_check   = None,
+        on_complete      = _on_complete,
+        upload_queue     = _upload_queue,
     )
     _session.start()
     return {"ok": True, "session_id": _session.session_id}
@@ -231,7 +207,7 @@ async def update_settings(request: Request):
         return JSONResponse({"error": "Invalid JSON"}, 400)
 
     for key in ("segment_duration", "session_duration", "mcap_enabled",
-                "operator_id", "activity_label"):
+                "operator_id", "operator_name", "task_id", "activity_label"):
         if key in req:
             settings[key] = req[key]
 
@@ -250,14 +226,12 @@ def upload_status():
 # ── Session History ───────────────────────────────────────────────
 @app.get("/history")
 def get_history():
-    today = date.today().isoformat()
-    today_sessions = [h for h in _session_history
-                      if h["timestamp"].startswith(today)]
+    today         = date.today().isoformat()
+    today_sessions = [h for h in _session_history if h["timestamp"].startswith(today)]
 
     if os.path.exists(OUTPUT_DIR):
         for d in sorted(glob.glob(os.path.join(OUTPUT_DIR, "session_*")), reverse=True):
-            manifests = glob.glob(os.path.join(d, "manifest_*.json"))
-            for m in manifests:
+            for m in glob.glob(os.path.join(d, "manifest_*.json")):
                 try:
                     with open(m) as f:
                         data = json.load(f)
@@ -287,10 +261,6 @@ def get_status():
 
 
 # ── GPIO bridge ───────────────────────────────────────────────────
-@app.post("/gpio/fov")
-def gpio_fov():
-    return start_fov_check()
-
 @app.post("/gpio/start")
 def gpio_start():
     return start_session()
