@@ -7,7 +7,7 @@ from typing import List, Optional, Callable
 from enum import Enum
 from pathlib import Path
 
-from capture.config import S3_BUCKET, S3_PREFIX, OUTPUT_DIR
+from capture.config import S3_PREFIX, OUTPUT_DIR
 
 log = logging.getLogger(__name__)
 
@@ -52,21 +52,11 @@ class UploadItem:
 
 
 class UploadQueue:
-    """
-    Thread-safe S3 upload queue with infinite retry + exponential backoff.
-    Moves files to .pending_uploads/ before upload — safe against power loss.
-    On init, scans .pending_uploads/ and re-queues any leftover files.
-    """
-
     def __init__(
         self,
         on_status_change: Optional[Callable] = None,
         on_complete: Optional[Callable[[str, str, int, str], None]] = None,
     ):
-        """
-        on_complete(local_path, s3_key, segment_idx, session_id) — called after
-        each successful upload. polling_agent hooks this to create episode in backend.
-        """
         self._queue: List[UploadItem] = []
         self._lock   = threading.Lock()
         self._event  = threading.Event()
@@ -95,19 +85,16 @@ class UploadQueue:
         log.info("Upload queue worker stopped")
 
     def enqueue(self, local_path: str, s3_key: str, segment_idx: int = -1, session_id: str = ""):
-        """Move file to pending folder and add to queue."""
         if not os.path.exists(local_path):
             log.warning(f"enqueue: file not found — {local_path}")
             return
 
-        # Move to hidden pending folder so a crash/power-loss doesn't
-        # leave the file in the main recordings dir untracked
         pending_path = os.path.join(PENDING_DIR, os.path.basename(local_path))
         try:
             os.rename(local_path, pending_path)
         except OSError as e:
             log.error(f"Could not move to pending: {e}")
-            pending_path = local_path  # fall back to original location
+            pending_path = local_path
 
         size = 0
         try:
@@ -126,15 +113,13 @@ class UploadQueue:
             self._queue.append(item)
         self._event.set()
         self._notify()
-        log.info(f"Enqueued: {os.path.basename(pending_path)} → s3://{S3_BUCKET}/{s3_key}")
+        log.info(f"Enqueued: {os.path.basename(pending_path)} → s3://{os.getenv('AWS_BUCKET_NAME', '?')}/{s3_key}")
 
     def enqueue_segment_files(self, session_id: str, segment_idx: int, files: dict,
                               operator_name: str = "", task_id: str = ""):
-        """Enqueue all files from a completed segment."""
         for label, path in files.items():
             if path and os.path.exists(path):
                 fname  = os.path.basename(path)
-                # S3 key structure: captures/{operator_name}/{task_id}/session_{id}/seg_{N}/{file}
                 if operator_name and task_id:
                     s3_key = f"{S3_PREFIX}{operator_name}/{task_id}/session_{session_id}/seg_{segment_idx:03d}/{fname}"
                 else:
@@ -160,7 +145,6 @@ class UploadQueue:
     # ── Private ───────────────────────────────────────────────────
 
     def _resume_pending(self):
-        """Re-queue any files left in .pending_uploads/ from a previous run."""
         leftover = glob.glob(os.path.join(PENDING_DIR, "**", "*"), recursive=True)
         leftover = [f for f in leftover if os.path.isfile(f)]
         if not leftover:
@@ -168,7 +152,6 @@ class UploadQueue:
         log.info(f"Boot resume: found {len(leftover)} pending file(s) — re-queuing")
         for path in leftover:
             fname  = os.path.basename(path)
-            # Reconstruct a best-effort s3 key (session unknown after crash)
             s3_key = f"{S3_PREFIX}resumed/{fname}"
             item   = UploadItem(
                 local_path=path,
@@ -212,16 +195,17 @@ class UploadQueue:
         return None
 
     def _upload(self, item: UploadItem):
-        item.status        = UploadStatus.UPLOADING
-        item.attempts     += 1
+        item.status         = UploadStatus.UPLOADING
+        item.attempts      += 1
         item.bytes_uploaded = 0
-        item.progress_pct  = 0.0
+        item.progress_pct   = 0.0
         self._notify()
 
         try:
-            s3 = self._get_s3()
-            mb = item.size_bytes / 1024 / 1024
-            log.info(f"Uploading {os.path.basename(item.local_path)} ({mb:.1f} MB, attempt {item.attempts})")
+            s3     = self._get_s3()
+            bucket = os.getenv("AWS_BUCKET_NAME")  # ← runtime pe fetch karo
+            mb     = item.size_bytes / 1024 / 1024
+            log.info(f"Uploading {os.path.basename(item.local_path)} ({mb:.1f} MB, attempt {item.attempts}) → {bucket}")
 
             last_notify = [0.0]
 
@@ -233,14 +217,13 @@ class UploadQueue:
                     last_notify[0] = time.time()
                     self._notify()
 
-            s3.upload_file(item.local_path, S3_BUCKET, item.s3_key, Callback=_cb)
+            s3.upload_file(item.local_path, bucket, item.s3_key, Callback=_cb)  # ← bucket runtime pe
 
             item.progress_pct = 100.0
             item.status       = UploadStatus.COMPLETE
             item.error        = None
             log.info(f"Upload complete: {item.s3_key}")
 
-            # Fire on_complete so polling_agent can register episode in backend
             if self.on_complete:
                 try:
                     self.on_complete(item.local_path, item.s3_key, item.segment_idx, item.session_id)
@@ -249,7 +232,6 @@ class UploadQueue:
 
         except Exception as e:
             log.error(f"Upload error: {e}")
-            # Exponential backoff — infinite retry
             delay = min(16 * (2 ** min(item.attempts - 1, 9)), 8192)
             item.status = UploadStatus.RETRYING
             item.error  = f"Attempt {item.attempts}: {e} — retrying in {delay}s"
