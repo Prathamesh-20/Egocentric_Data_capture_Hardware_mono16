@@ -181,6 +181,8 @@ class UploadQueue:
         while not self._stop.is_set():
             self._event.wait(timeout=2)
             self._event.clear()
+            if not os.getenv("AWS_BUCKET_NAME"):
+                continue  
             while not self._stop.is_set():
                 item = self._next_pending()
                 if item is None:
@@ -203,7 +205,7 @@ class UploadQueue:
 
         try:
             s3     = self._get_s3()
-            bucket = os.getenv("AWS_BUCKET_NAME")  # ← runtime pe fetch karo
+            bucket = os.getenv("AWS_BUCKET_NAME")  # fetches at runtime
             mb     = item.size_bytes / 1024 / 1024
             log.info(f"Uploading {os.path.basename(item.local_path)} ({mb:.1f} MB, attempt {item.attempts}) → {bucket}")
 
@@ -217,7 +219,7 @@ class UploadQueue:
                     last_notify[0] = time.time()
                     self._notify()
 
-            s3.upload_file(item.local_path, bucket, item.s3_key, Callback=_cb)  # ← bucket runtime pe
+            s3.upload_file(item.local_path, bucket, item.s3_key, Callback=_cb)  
 
             item.progress_pct = 100.0
             item.status       = UploadStatus.COMPLETE
