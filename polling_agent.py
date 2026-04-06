@@ -28,29 +28,29 @@ if not BACKEND_URL:
 def fetch_and_set_credentials():
     """
     Fetch AWS credentials from backend using hostname.
-    Sets them as env vars so uploader.py (boto3) picks them up.
-    Retries indefinitely until backend is reachable.
+    Non-blocking — if credentials are missing or backend unreachable,
+    just log and continue (local mode).
     """
     url = f"{BACKEND_URL}/api/v1/pi-credentials/{HOSTNAME}"
-    while True:
-        try:
-            r = requests.get(url, timeout=5)
-            if r.status_code == 200:
-                creds = r.json()
+    try:
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            creds = r.json()
+            if creds.get("aws_access_key_id"):
                 os.environ["AWS_ACCESS_KEY_ID"]     = creds["aws_access_key_id"]
                 os.environ["AWS_SECRET_ACCESS_KEY"] = creds["aws_secret_access_key"]
                 os.environ["AWS_REGION"]            = creds["aws_region"]
                 os.environ["AWS_BUCKET_NAME"]       = creds["aws_bucket_name"]
                 log.info("AWS credentials fetched from backend ✓")
-                return
-            elif r.status_code == 404:
-                log.error(f"Hostname '{HOSTNAME}' not registered in backend — exiting")
-                sys.exit(1)
             else:
-                log.warning(f"Credentials fetch failed ({r.status_code}) — retrying in 10s")
-        except Exception as e:
-            log.warning(f"Backend unreachable for credentials: {e} — retrying in 10s")
-        time.sleep(10)
+                log.warning("AWS credentials not set in backend — skipping (local mode)")
+        elif r.status_code == 404:
+            log.error(f"Hostname '{HOSTNAME}' not registered in backend — exiting")
+            sys.exit(1)
+        else:
+            log.warning(f"Credentials fetch failed ({r.status_code}) — continuing anyway")
+    except Exception as e:
+        log.warning(f"Could not fetch credentials: {e} — continuing anyway")
 
 
 # ── Shared state ───────────────────────────────────────────────────
@@ -58,7 +58,7 @@ _current_task_id       = None
 _current_operator_id   = None
 _current_operator_name = None
 _session_active        = False
-_processed_s3_keys     = set()   # .bag s3_keys already reported to backend
+_processed_s3_keys     = set()
 _state_lock            = threading.Lock()
 
 
@@ -127,7 +127,6 @@ def handle_start(data: dict):
         _current_operator_name = operator_name
         _processed_s3_keys     = set()
 
-    # 1. Set operator/task on local server
     local_post("/settings", json={
         "operator_id":    operator_id,
         "operator_name":  operator_name,
@@ -135,7 +134,6 @@ def handle_start(data: dict):
         "activity_label": task_id,
     })
 
-    # 2. Start session directly — FOV_CHECK_ENABLED=False in new hardware
     result = local_post("/session/start")
     if result.get("ok") or result.get("session_id"):
         with _state_lock:
@@ -144,7 +142,6 @@ def handle_start(data: dict):
     else:
         log.error(f"Session start failed: {result}")
 
-    # 3. Acknowledge command
     if command_id:
         backend_post(f"/api/v1/pi-commands/complete/{command_id}")
 
@@ -171,11 +168,6 @@ def handle_stop(data: dict):
 # ── Upload monitor ─────────────────────────────────────────────────
 
 def _upload_monitor():
-    """
-    Runs in background thread. Polls /upload-status every 3s.
-    When a .bag file upload is COMPLETE — notifies backend to create episode.
-    Uses s3_key to deduplicate — same file never reported twice.
-    """
     log.info("Upload monitor started")
 
     while True:
@@ -198,7 +190,6 @@ def _upload_monitor():
                 status   = item.get("status", "")
                 s3_key   = item.get("s3_key", "")
 
-                # Only .bag files — complete — not yet reported
                 if (filename.endswith(".bag")
                         and status == "complete"
                         and s3_key
@@ -217,15 +208,11 @@ def _upload_monitor():
                         }
                     )
 
-                    # Mark processed regardless of backend response
                     with _state_lock:
                         _processed_s3_keys.add(s3_key)
 
                     if result.get("target_met"):
-                        log.info(
-                            f"Target met for task {task_id} — "
-                            "backend will send stop command"
-                        )
+                        log.info(f"Target met for task {task_id} — backend will send stop command")
 
         except Exception as e:
             log.error(f"Upload monitor error: {e}")
@@ -241,7 +228,6 @@ def poll():
     log.info(f"  Interval : {POLL_INTERVAL}s")
     log.info("=" * 50)
 
-    # Start upload monitor in background
     threading.Thread(
         target=_upload_monitor, daemon=True, name="upload-monitor"
     ).start()
@@ -273,7 +259,5 @@ def poll():
 
 
 if __name__ == "__main__":
-    # Step 1: fetch AWS credentials from backend (sets env vars in memory)
     fetch_and_set_credentials()
-    # Step 2: start polling
     poll()
