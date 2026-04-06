@@ -42,6 +42,14 @@ def fetch_and_set_credentials():
                 os.environ["AWS_REGION"]            = creds["aws_region"]
                 os.environ["AWS_BUCKET_NAME"]       = creds["aws_bucket_name"]
                 log.info("AWS credentials fetched from backend ✓")
+                
+                local_post("/settings", json={
+                    "AWS_ACCESS_KEY_ID":     creds["aws_access_key_id"],
+                    "AWS_SECRET_ACCESS_KEY": creds["aws_secret_access_key"],
+                    "AWS_REGION":            creds["aws_region"],
+                    "AWS_BUCKET_NAME":       creds["aws_bucket_name"],
+                })
+                log.info("AWS credentials pushed to capture_daemon ✓")
             else:
                 log.warning("AWS credentials not set in backend — skipping (local mode)")
         elif r.status_code == 404:
@@ -143,7 +151,7 @@ def handle_start(data: dict):
     })
 
     result = local_post("/session/start")
-    if result:  # kuch bhi aaya toh success
+    if result: 
         with _state_lock:
             _session_active = True
         log.info(f"Session started: {result.get('session_id', 'unknown')}")
