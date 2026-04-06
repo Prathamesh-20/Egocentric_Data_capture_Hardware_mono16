@@ -1,0 +1,19 @@
+[Unit]
+Description=App Backend Polling Agent
+After=network-online.target capture-daemon.service
+Wants=network-online.target
+Requires=capture-daemon.service
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i
+EnvironmentFile=/home/%i/.env.polling
+ExecStart=/usr/bin/python3 /home/%i/polling_agent.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
