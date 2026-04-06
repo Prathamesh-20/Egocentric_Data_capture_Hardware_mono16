@@ -211,6 +211,11 @@ async def update_settings(request: Request):
         if key in req:
             settings[key] = req[key]
 
+    # AWS credentials — inject into environment so uploader picks them up
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_BUCKET_NAME"):
+        if req.get(key):
+            os.environ[key] = req[key]
+
     state["max_segments"] = settings["session_duration"] // settings["segment_duration"]
     _broadcast()
     log.info(f"Settings updated: {settings}")
