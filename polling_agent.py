@@ -132,10 +132,14 @@ def handle_start(data: dict):
         _processed_s3_keys     = set()
 
     local_post("/settings", json={
-        "operator_id":    operator_id,
-        "operator_name":  operator_name,
-        "task_id":        task_id,
-        "activity_label": task_id,
+        "operator_id":           operator_id,
+        "operator_name":         operator_name,
+        "task_id":               task_id,
+        "activity_label":        task_id,
+        "AWS_ACCESS_KEY_ID":     os.getenv("AWS_ACCESS_KEY_ID", ""),
+        "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY", ""),
+        "AWS_REGION":            os.getenv("AWS_REGION", ""),
+        "AWS_BUCKET_NAME":       os.getenv("AWS_BUCKET_NAME", ""),
     })
 
     result = local_post("/session/start")
