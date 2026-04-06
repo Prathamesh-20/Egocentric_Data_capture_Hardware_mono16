@@ -7,20 +7,16 @@ Wants=network-online.target
 Type=simple
 User=%i
 Group=video
-# Dynamic path based on username
 WorkingDirectory=/home/%i/Egocentric_Data_capture_Hardware_mono16
+Environment="PYTHONPATH=/home/%i/Egocentric_Data_capture_Hardware_mono16"
+Environment="LD_LIBRARY_PATH=/opt/OrbbecSDK/lib"
+Environment="QT_QPA_PLATFORM=offscreen"
 ExecStart=/usr/bin/python3 /home/%i/Egocentric_Data_capture_Hardware_mono16/capture_daemon.py
 Restart=on-failure
 RestartSec=5
+SupplementaryGroups=plugdev
 StandardOutput=journal
 StandardError=journal
-
-# Environment for Orbbec SDK
-Environment="LD_LIBRARY_PATH=/opt/OrbbecSDK/lib"
-Environment="QT_QPA_PLATFORM=offscreen"
-
-# Allow USB device access
-SupplementaryGroups=plugdev
 
 [Install]
 WantedBy=multi-user.target
