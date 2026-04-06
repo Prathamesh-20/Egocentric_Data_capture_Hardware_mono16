@@ -1,20 +1,26 @@
 [Unit]
-Description=App Backend Polling Agent for %i
-After=network-online.target capture-daemon@%i.service
+Description=Egocentric Data Capture V2 Daemon for %i
+After=network.target
 Wants=network-online.target
-# Specific dependency on the daemon of the SAME user
-Requires=capture-daemon@%i.service
 
 [Service]
 Type=simple
 User=%i
+Group=video
+# Dynamic path based on username
 WorkingDirectory=/home/%i/Egocentric_Data_capture_Hardware_mono16
-EnvironmentFile=/home/%i/Egocentric_Data_capture_Hardware_mono16/.env.polling
-ExecStart=/usr/bin/python3 /home/%i/Egocentric_Data_capture_Hardware_mono16/polling_agent.py
-Restart=always
+ExecStart=/usr/bin/python3 /home/%i/Egocentric_Data_capture_Hardware_mono16/capture_daemon.py
+Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
+
+# Environment for Orbbec SDK
+Environment="LD_LIBRARY_PATH=/opt/OrbbecSDK/lib"
+Environment="QT_QPA_PLATFORM=offscreen"
+
+# Allow USB device access
+SupplementaryGroups=plugdev
 
 [Install]
 WantedBy=multi-user.target
