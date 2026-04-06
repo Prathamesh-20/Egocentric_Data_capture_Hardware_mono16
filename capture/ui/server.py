@@ -27,8 +27,8 @@ settings = {
     "session_duration": SESSION_DURATION,
     "mcap_enabled":     MCAP_ENABLED_DEFAULT,
     "operator_id":      "",
-    "operator_name":    "",   # ← added: set by polling_agent on start command
-    "task_id":          "",   # ← added: set by polling_agent on start command
+    "operator_name":    "",
+    "task_id":          "",
     "activity_label":   "",
 }
 
@@ -51,7 +51,7 @@ _ws_clients      = set()
 _ws_lock         = threading.Lock()
 _upload_queue    = UploadQueue()
 _session_history = []
-_gpio            = None   # injected by capture_daemon via setup_server_gpio_hooks()
+_gpio            = None
 
 
 def _set_state(**kwargs):
@@ -97,7 +97,7 @@ async def websocket_endpoint(ws: WebSocket):
             _ws_clients.discard(ws)
 
 
-# ── FOV Check (optional, kept for compatibility) ──────────────────
+# ── FOV Check ─────────────────────────────────────────────────────
 @app.post("/fov-check")
 def start_fov_check():
     if not FOV_CHECK_ENABLED:
@@ -169,8 +169,8 @@ def start_session():
 
     _session = SessionV2(
         operator_id      = settings["operator_id"],
-        operator_name    = settings["operator_name"],   # ← passed through
-        task_id          = settings["task_id"],         # ← passed through
+        operator_name    = settings["operator_name"],
+        task_id          = settings["task_id"],
         activity_label   = settings["activity_label"],
         segment_duration = settings["segment_duration"],
         session_duration = settings["session_duration"],
@@ -231,7 +231,7 @@ def upload_status():
 # ── Session History ───────────────────────────────────────────────
 @app.get("/history")
 def get_history():
-    today         = date.today().isoformat()
+    today          = date.today().isoformat()
     today_sessions = [h for h in _session_history if h["timestamp"].startswith(today)]
 
     if os.path.exists(OUTPUT_DIR):
@@ -285,4 +285,5 @@ def shutdown_event():
 
 
 def run():
+    _upload_queue.start()  
     uvicorn.run(app, host=UI_HOST, port=UI_PORT, log_level="warning")
