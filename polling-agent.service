@@ -6,10 +6,10 @@ Requires=capture-daemon.service
 
 [Service]
 Type=simple
-User=%i
-WorkingDirectory=/home/%i
-EnvironmentFile=/home/%i/.env.polling
-ExecStart=/usr/bin/python3 /home/%i/polling_agent.py
+User=autonexego30
+WorkingDirectory=/home/autonexego30/Egocentric_Data_capture_Hardware_mono16
+EnvironmentFile=/home/autonexego30/Egocentric_Data_capture_Hardware_mono16/.env.polling
+ExecStart=/usr/bin/python3 /home/autonexego30/Egocentric_Data_capture_Hardware_mono16/polling_agent.py
 Restart=always
 RestartSec=5
 StandardOutput=journal
