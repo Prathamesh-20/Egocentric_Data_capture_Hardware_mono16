@@ -4,6 +4,7 @@ Polling Agent — runs on Pi alongside capture_daemon.
 """
 import os, sys, time, socket, logging, threading
 import requests
+from datetime import datetime, timezone
 
 logging.basicConfig(
     level=logging.INFO,
@@ -258,6 +259,23 @@ def poll():
             if r.status_code == 200:
                 data    = r.json()
                 command = data.get("command")
+
+                # ── TTL check ──────────────────────────────────────
+                expires_at_str = data.get("expires_at")
+                if command and expires_at_str:
+                    expires_at = datetime.fromisoformat(expires_at_str)
+                    
+                    if expires_at.tzinfo is None:
+                        expires_at = expires_at.replace(tzinfo=timezone.utc)
+                    now = datetime.now(timezone.utc)
+                    if now > expires_at:
+                        log.warning(f"Stale command '{command}' received — ignoring (expired at {expires_at_str})")
+                        command_id = data.get("command_id", "")
+                        if command_id:
+                            backend_post(f"/api/v1/pi-commands/complete/{command_id}")
+                        command = None  
+                # ──────────────────────────────────────────────────
+
                 if command == "start":
                     handle_start(data)
                 elif command == "stop":
