@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 Polling Agent — runs on Pi alongside capture_daemon.
+Polls backend for start/stop commands and notifies backend when segments are ready.
 """
 import os, sys, time, socket, logging, threading
 import requests
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 logging.basicConfig(
     level=logging.INFO,
@@ -14,19 +15,24 @@ logging.basicConfig(
 log = logging.getLogger("polling-agent")
 
 # ── Config ─────────────────────────────────────────────────────────
-BACKEND_URL   = os.getenv("BACKEND_URL", "").rstrip("/")
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECS", "2"))
-LOCAL_URL     = "http://localhost:8080"
-HOSTNAME      = socket.gethostname()
+BACKEND_URL        = os.getenv("BACKEND_URL", "").rstrip("/")
+POLL_INTERVAL      = int(os.getenv("POLL_INTERVAL_SECS", "2"))
+LOCAL_URL          = "http://localhost:8080"
+HOSTNAME           = socket.gethostname()
+STOP_GRACE_SECONDS = 120  # keep monitoring for 2 mins after stop to catch last segments
 
 if not BACKEND_URL:
     log.error("BACKEND_URL not set — exiting")
     sys.exit(1)
 
 
-# ── Fetch AWS credentials from backend at startup ─────────────────
-
+# ── Fetch AWS credentials from backend at startup ──────────────────
 def fetch_and_set_credentials():
+    """
+    Fetch AWS credentials from backend using hostname.
+    Non-blocking — if credentials are missing or backend unreachable,
+    just log and continue (local mode).
+    """
     url = f"{BACKEND_URL}/api/v1/pi-credentials/{HOSTNAME}"
     try:
         r = requests.get(url, timeout=5)
@@ -39,6 +45,7 @@ def fetch_and_set_credentials():
                 os.environ["AWS_BUCKET_NAME"]       = creds["aws_bucket_name"]
                 log.info("AWS credentials fetched from backend ✓")
 
+                # Push credentials to capture_daemon so it can upload to S3
                 local_post("/settings", json={
                     "AWS_ACCESS_KEY_ID":     creds["aws_access_key_id"],
                     "AWS_SECRET_ACCESS_KEY": creds["aws_secret_access_key"],
@@ -62,13 +69,13 @@ _current_task_id       = None
 _current_operator_id   = None
 _current_operator_name = None
 _session_active        = False
-_processed_filenames   = {}   # filename -> episode_id
-_pending_episodes      = []   # backend unreachable - retry queue
+_session_stopped_at    = None   # timestamp when session was stopped (for grace period)
+_processed_filenames   = {}     # filename -> episode_id (to avoid duplicates + track for s3 update)
+_pending_episodes      = []     # retry queue when backend is unreachable
 _state_lock            = threading.Lock()
 
 
 # ── Local server helpers ───────────────────────────────────────────
-
 def local_post(path: str, json: dict = None) -> dict:
     try:
         r = requests.post(f"{LOCAL_URL}{path}", json=json, timeout=5)
@@ -92,7 +99,6 @@ def local_get(path: str) -> dict:
 
 
 # ── Backend helpers ────────────────────────────────────────────────
-
 def backend_post(path: str) -> dict:
     try:
         r = requests.post(f"{BACKEND_URL}{path}", timeout=5)
@@ -130,10 +136,9 @@ def backend_patch_json(path: str, data: dict) -> dict:
 
 
 # ── Handle start command ───────────────────────────────────────────
-
 def handle_start(data: dict):
     global _current_task_id, _current_operator_id, _current_operator_name
-    global _session_active, _processed_filenames
+    global _session_active, _session_stopped_at, _processed_filenames
 
     task_id       = data.get("task_id", "")
     operator_id   = data.get("operator_id", "")
@@ -146,8 +151,10 @@ def handle_start(data: dict):
         _current_task_id       = task_id
         _current_operator_id   = operator_id
         _current_operator_name = operator_name
-        _processed_filenames   = {}  #reset processed filenames on new session start
+        _processed_filenames   = {}     # reset for new task
+        _session_stopped_at    = None   # reset grace period timer
 
+    # Send task + operator info to capture_daemon before starting session
     local_post("/settings", json={
         "operator_id":           operator_id,
         "operator_name":         operator_name,
@@ -167,14 +174,14 @@ def handle_start(data: dict):
     else:
         log.error(f"Session start failed: {result}")
 
+    # Mark command as completed in backend
     if command_id:
         backend_post(f"/api/v1/pi-commands/complete/{command_id}")
 
 
 # ── Handle stop command ────────────────────────────────────────────
-
 def handle_stop(data: dict):
-    global _session_active
+    global _session_active, _session_stopped_at
 
     command_id = data.get("command_id", "")
     log.info("STOP command received")
@@ -182,8 +189,10 @@ def handle_stop(data: dict):
     local_post("/session/stop")
 
     with _state_lock:
-        _session_active = False
+        _session_active     = False
+        _session_stopped_at = datetime.now(timezone.utc)  # start grace period timer
 
+    # Mark command as completed in backend
     if command_id:
         backend_post(f"/api/v1/pi-commands/complete/{command_id}")
 
@@ -191,8 +200,15 @@ def handle_stop(data: dict):
 
 
 # ── Upload monitor ─────────────────────────────────────────────────
-
 def _upload_monitor():
+    """
+    Runs in background thread.
+    Watches capture_daemon's upload-status endpoint for completed .bag segments.
+    Saves episodes to backend DB as soon as segment is locally ready (status=uploading),
+    without waiting for S3 upload to finish — so target can be met immediately.
+    Once S3 upload completes, updates the episode with the s3_key.
+    Continues monitoring for STOP_GRACE_SECONDS after session stops to catch last segments.
+    """
     log.info("Upload monitor started")
 
     while True:
@@ -200,12 +216,27 @@ def _upload_monitor():
 
         with _state_lock:
             active      = _session_active
+            stopped_at  = _session_stopped_at
             task_id     = _current_task_id
             operator_id = _current_operator_id
             processed   = dict(_processed_filenames)
             pending     = list(_pending_episodes)
 
-        # ── Retry pending episodes ─────────────────────────────────
+        # Check if we're in grace period (session stopped but still watching for last segments)
+        in_grace = (
+            not active
+            and stopped_at is not None
+            and (datetime.now(timezone.utc) - stopped_at).total_seconds() < STOP_GRACE_SECONDS
+        )
+
+        # Skip if session not active and not in grace period
+        if not active and not in_grace:
+            continue
+
+        if not task_id:
+            continue
+
+        # ── Retry any episodes that failed due to backend being unreachable ──
         if pending:
             log.info(f"Retrying {len(pending)} pending episodes...")
             still_pending = []
@@ -215,17 +246,13 @@ def _upload_monitor():
                     log.info(f"Retry success: {ep.get('filename')}")
                     with _state_lock:
                         _processed_filenames[ep["filename"]] = result["episode_id"]
-                        if result.get("target_met"):
-                            log.info("Target met (retry) — backend will send stop command")
+                    if result.get("target_met"):
+                        log.info("Target met (on retry) — backend will send stop command")
                 else:
                     still_pending.append(ep)
             with _state_lock:
                 _pending_episodes.clear()
                 _pending_episodes.extend(still_pending)
-        # ──────────────────────────────────────────────────────────
-
-        if not active or not task_id:
-            continue
 
         try:
             items = local_get("/upload-status").get("items", [])
@@ -235,12 +262,16 @@ def _upload_monitor():
                 status   = item.get("status", "")
                 s3_key   = item.get("s3_key", "") or ""
 
+                # Only care about .bag files (video segments)
                 if not filename.endswith(".bag"):
                     continue
 
                 already_saved = filename in processed
 
-                # Step 1 — locally ready - save episode to DB with s3_key pending
+                # Step 1 — Save episode to DB as soon as segment is locally ready
+                # "uploading" = local recording done, S3 upload in progress
+                # "complete"  = S3 upload also done
+                # We save at "uploading" so target can be met without waiting for S3
                 if (not already_saved
                         and status in ("complete", "uploading")):
 
@@ -249,7 +280,7 @@ def _upload_monitor():
                     ep_data = {
                         "task_id":     task_id,
                         "operator_id": operator_id,
-                        "s3_key":      s3_key if s3_key else None,
+                        "s3_key":      s3_key if s3_key else None,  # may be None if still uploading
                         "filename":    filename,
                         "notes":       None,
                         "hostname":    HOSTNAME,
@@ -263,12 +294,12 @@ def _upload_monitor():
                         if result.get("target_met"):
                             log.info(f"Target met for task {task_id} — backend will send stop command")
                     else:
-                        # Backend unreachable — in queue for retry 
-                        log.warning(f"Backend unreachable — queuing episode for retry: {filename}")
+                        # Backend unreachable — queue for retry
+                        log.warning(f"Backend unreachable — queuing for retry: {filename}")
                         with _state_lock:
                             _pending_episodes.append(ep_data)
 
-                # Step 2 — S3 complete, s3_key set
+                # Step 2 — S3 upload finished, update episode with s3_key
                 elif (already_saved
                         and status == "complete"
                         and s3_key):
@@ -280,6 +311,7 @@ def _upload_monitor():
                             f"/api/v1/pi-episodes/{episode_id}/update-s3",
                             {"s3_key": s3_key}
                         )
+                        # Set to None so we don't update again
                         with _state_lock:
                             _processed_filenames[filename] = None
 
@@ -288,7 +320,6 @@ def _upload_monitor():
 
 
 # ── Main polling loop ──────────────────────────────────────────────
-
 def poll():
     log.info("=" * 50)
     log.info("  Polling Agent started")
@@ -297,6 +328,7 @@ def poll():
     log.info(f"  Interval : {POLL_INTERVAL}s")
     log.info("=" * 50)
 
+    # Start upload monitor in background thread
     threading.Thread(
         target=_upload_monitor, daemon=True, name="upload-monitor"
     ).start()
@@ -312,7 +344,7 @@ def poll():
                 data    = r.json()
                 command = data.get("command")
 
-                # ── TTL check ──────────────────────────────────────
+                # ── TTL check — ignore stale commands if Pi was offline ────
                 expires_at_str = data.get("expires_at")
                 if command and expires_at_str:
                     expires_at = datetime.fromisoformat(expires_at_str)
@@ -320,12 +352,12 @@ def poll():
                         expires_at = expires_at.replace(tzinfo=timezone.utc)
                     now = datetime.now(timezone.utc)
                     if now > expires_at:
-                        log.warning(f"Stale command '{command}' received — ignoring (expired at {expires_at_str})")
+                        log.warning(f"Stale command '{command}' ignored (expired at {expires_at_str})")
                         command_id = data.get("command_id", "")
                         if command_id:
                             backend_post(f"/api/v1/pi-commands/complete/{command_id}")
                         command = None
-                # ──────────────────────────────────────────────────
+                # ──────────────────────────────────────────────────────────
 
                 if command == "start":
                     handle_start(data)
