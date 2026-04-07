@@ -226,6 +226,14 @@ class UploadQueue:
             item.error        = None
             log.info(f"Upload complete: {item.s3_key}")
 
+            # Delete local file after successful S3 upload to free up disk space
+            try:
+                os.remove(item.local_path)
+                log.info(f"Local file deleted: {os.path.basename(item.local_path)}")
+            except Exception as e:
+                log.warning(f"Could not delete local file: {e}")
+
+
             if self.on_complete:
                 try:
                     self.on_complete(item.local_path, item.s3_key, item.segment_idx, item.session_id)
