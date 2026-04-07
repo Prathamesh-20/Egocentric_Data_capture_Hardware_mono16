@@ -4,7 +4,7 @@ Polling Agent — runs on Pi alongside capture_daemon.
 """
 import os, sys, time, socket, logging, threading
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,11 +27,6 @@ if not BACKEND_URL:
 # ── Fetch AWS credentials from backend at startup ─────────────────
 
 def fetch_and_set_credentials():
-    """
-    Fetch AWS credentials from backend using hostname.
-    Non-blocking — if credentials are missing or backend unreachable,
-    just log and continue (local mode).
-    """
     url = f"{BACKEND_URL}/api/v1/pi-credentials/{HOSTNAME}"
     try:
         r = requests.get(url, timeout=5)
@@ -43,7 +38,7 @@ def fetch_and_set_credentials():
                 os.environ["AWS_REGION"]            = creds["aws_region"]
                 os.environ["AWS_BUCKET_NAME"]       = creds["aws_bucket_name"]
                 log.info("AWS credentials fetched from backend ✓")
-                
+
                 local_post("/settings", json={
                     "AWS_ACCESS_KEY_ID":     creds["aws_access_key_id"],
                     "AWS_SECRET_ACCESS_KEY": creds["aws_secret_access_key"],
@@ -67,7 +62,7 @@ _current_task_id       = None
 _current_operator_id   = None
 _current_operator_name = None
 _session_active        = False
-_processed_s3_keys     = set()
+_processed_filenames   = {}   # filename -> episode_id
 _state_lock            = threading.Lock()
 
 
@@ -121,11 +116,23 @@ def backend_post_json(path: str, data: dict) -> dict:
         return {}
 
 
+def backend_patch_json(path: str, data: dict) -> dict:
+    try:
+        r = requests.patch(f"{BACKEND_URL}{path}", json=data, timeout=10)
+        return r.json() if r.status_code in (200, 201) else {}
+    except requests.exceptions.ConnectionError:
+        log.warning("Backend unreachable")
+        return {}
+    except Exception as e:
+        log.error(f"Backend PATCH failed ({path}): {e}")
+        return {}
+
+
 # ── Handle start command ───────────────────────────────────────────
 
 def handle_start(data: dict):
     global _current_task_id, _current_operator_id, _current_operator_name
-    global _session_active, _processed_s3_keys
+    global _session_active, _processed_filenames
 
     task_id       = data.get("task_id", "")
     operator_id   = data.get("operator_id", "")
@@ -138,7 +145,7 @@ def handle_start(data: dict):
         _current_task_id       = task_id
         _current_operator_id   = operator_id
         _current_operator_name = operator_name
-        _processed_s3_keys     = set()
+        _processed_filenames   = {}  
 
     local_post("/settings", json={
         "operator_id":           operator_id,
@@ -152,7 +159,7 @@ def handle_start(data: dict):
     })
 
     result = local_post("/session/start")
-    if result: 
+    if result:
         with _state_lock:
             _session_active = True
         log.info(f"Session started: {result.get('session_id', 'unknown')}")
@@ -194,7 +201,7 @@ def _upload_monitor():
             active      = _session_active
             task_id     = _current_task_id
             operator_id = _current_operator_id
-            processed   = set(_processed_s3_keys)
+            processed   = dict(_processed_filenames)
 
         if not active or not task_id:
             continue
@@ -205,31 +212,55 @@ def _upload_monitor():
             for item in items:
                 filename = item.get("filename", "")
                 status   = item.get("status", "")
-                s3_key   = item.get("s3_key", "")
+                s3_key   = item.get("s3_key", "") or ""
 
-                if (filename.endswith(".bag")
-                        and status == "complete"
-                        and s3_key
-                        and s3_key not in processed):
+                if not filename.endswith(".bag"):
+                    continue
 
-                    log.info(f"Segment complete — notifying backend: {filename}")
+                already_saved = filename in processed
+
+                # Step 1 — .bag locally ready - save in DB immediately, even if S3 upload pending
+                # "uploading" = local recording done, uploading to S3 
+                # "complete"  = S3 upload done (s3_key should be set)
+                if (not already_saved
+                        and status in ("complete", "uploading")):
+
+                    log.info(f"Segment ready — saving episode: {filename} (status={status})")
 
                     result = backend_post_json(
                         "/api/v1/pi-episodes/",
                         {
                             "task_id":     task_id,
                             "operator_id": operator_id,
-                            "s3_key":      s3_key,
+                            "s3_key":      s3_key if s3_key else None,
+                            "filename":    filename,
                             "notes":       None,
                             "hostname":    HOSTNAME,
                         }
                     )
 
+                    episode_id = result.get("episode_id")
                     with _state_lock:
-                        _processed_s3_keys.add(s3_key)
+                        _processed_filenames[filename] = episode_id
 
                     if result.get("target_met"):
                         log.info(f"Target met for task {task_id} — backend will send stop command")
+
+                # Step 2 — S3 upload complete, s3_key update 
+                elif (already_saved
+                        and status == "complete"
+                        and s3_key):
+
+                    episode_id = processed.get(filename)
+                    if episode_id:
+                        log.info(f"S3 upload complete — updating s3_key for episode {episode_id}")
+                        backend_patch_json(
+                            f"/api/v1/pi-episodes/{episode_id}/update-s3",
+                            {"s3_key": s3_key}
+                        )
+                        
+                        with _state_lock:
+                            _processed_filenames[filename] = None
 
         except Exception as e:
             log.error(f"Upload monitor error: {e}")
@@ -264,7 +295,6 @@ def poll():
                 expires_at_str = data.get("expires_at")
                 if command and expires_at_str:
                     expires_at = datetime.fromisoformat(expires_at_str)
-                    
                     if expires_at.tzinfo is None:
                         expires_at = expires_at.replace(tzinfo=timezone.utc)
                     now = datetime.now(timezone.utc)
@@ -273,7 +303,7 @@ def poll():
                         command_id = data.get("command_id", "")
                         if command_id:
                             backend_post(f"/api/v1/pi-commands/complete/{command_id}")
-                        command = None  
+                        command = None
                 # ──────────────────────────────────────────────────
 
                 if command == "start":
