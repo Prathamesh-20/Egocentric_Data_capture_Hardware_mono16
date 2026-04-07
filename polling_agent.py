@@ -268,12 +268,13 @@ def _upload_monitor():
 
                 already_saved = filename in processed
 
-                # Step 1 — Save episode to DB as soon as segment is locally ready
-                # "uploading" = local recording done, S3 upload in progress
-                # "complete"  = S3 upload also done
-                # We save at "uploading" so target can be met without waiting for S3
+                # Save episode as soon as segment is locally ready
+                # queued    = local recording done, waiting to upload to S3
+                # uploading = S3 upload in progress
+                # retrying  = S3 upload failed, retrying — local file still ready
+                # complete  = S3 upload done
                 if (not already_saved
-                        and status in ("complete", "uploading")):
+                        and status in ("complete", "uploading", "retrying", "queued")):
 
                     log.info(f"Segment ready — saving episode: {filename} (status={status})")
 
