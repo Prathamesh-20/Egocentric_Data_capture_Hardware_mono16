@@ -63,6 +63,7 @@ _current_operator_id   = None
 _current_operator_name = None
 _session_active        = False
 _processed_filenames   = {}   # filename -> episode_id
+_pending_episodes      = []   # backend unreachable - retry queue
 _state_lock            = threading.Lock()
 
 
@@ -145,7 +146,7 @@ def handle_start(data: dict):
         _current_task_id       = task_id
         _current_operator_id   = operator_id
         _current_operator_name = operator_name
-        _processed_filenames   = {}  
+        _processed_filenames   = {}  #reset processed filenames on new session start
 
     local_post("/settings", json={
         "operator_id":           operator_id,
@@ -202,6 +203,26 @@ def _upload_monitor():
             task_id     = _current_task_id
             operator_id = _current_operator_id
             processed   = dict(_processed_filenames)
+            pending     = list(_pending_episodes)
+
+        # ── Retry pending episodes ─────────────────────────────────
+        if pending:
+            log.info(f"Retrying {len(pending)} pending episodes...")
+            still_pending = []
+            for ep in pending:
+                result = backend_post_json("/api/v1/pi-episodes/", ep)
+                if result.get("episode_id"):
+                    log.info(f"Retry success: {ep.get('filename')}")
+                    with _state_lock:
+                        _processed_filenames[ep["filename"]] = result["episode_id"]
+                        if result.get("target_met"):
+                            log.info("Target met (retry) — backend will send stop command")
+                else:
+                    still_pending.append(ep)
+            with _state_lock:
+                _pending_episodes.clear()
+                _pending_episodes.extend(still_pending)
+        # ──────────────────────────────────────────────────────────
 
         if not active or not task_id:
             continue
@@ -219,34 +240,35 @@ def _upload_monitor():
 
                 already_saved = filename in processed
 
-                # Step 1 — .bag locally ready - save in DB immediately, even if S3 upload pending
-                # "uploading" = local recording done, uploading to S3 
-                # "complete"  = S3 upload done (s3_key should be set)
+                # Step 1 — locally ready - save episode to DB with s3_key pending
                 if (not already_saved
                         and status in ("complete", "uploading")):
 
                     log.info(f"Segment ready — saving episode: {filename} (status={status})")
 
-                    result = backend_post_json(
-                        "/api/v1/pi-episodes/",
-                        {
-                            "task_id":     task_id,
-                            "operator_id": operator_id,
-                            "s3_key":      s3_key if s3_key else None,
-                            "filename":    filename,
-                            "notes":       None,
-                            "hostname":    HOSTNAME,
-                        }
-                    )
+                    ep_data = {
+                        "task_id":     task_id,
+                        "operator_id": operator_id,
+                        "s3_key":      s3_key if s3_key else None,
+                        "filename":    filename,
+                        "notes":       None,
+                        "hostname":    HOSTNAME,
+                    }
 
-                    episode_id = result.get("episode_id")
-                    with _state_lock:
-                        _processed_filenames[filename] = episode_id
+                    result = backend_post_json("/api/v1/pi-episodes/", ep_data)
 
-                    if result.get("target_met"):
-                        log.info(f"Target met for task {task_id} — backend will send stop command")
+                    if result.get("episode_id"):
+                        with _state_lock:
+                            _processed_filenames[filename] = result["episode_id"]
+                        if result.get("target_met"):
+                            log.info(f"Target met for task {task_id} — backend will send stop command")
+                    else:
+                        # Backend unreachable — in queue for retry 
+                        log.warning(f"Backend unreachable — queuing episode for retry: {filename}")
+                        with _state_lock:
+                            _pending_episodes.append(ep_data)
 
-                # Step 2 — S3 upload complete, s3_key update 
+                # Step 2 — S3 complete, s3_key set
                 elif (already_saved
                         and status == "complete"
                         and s3_key):
@@ -258,7 +280,6 @@ def _upload_monitor():
                             f"/api/v1/pi-episodes/{episode_id}/update-s3",
                             {"s3_key": s3_key}
                         )
-                        
                         with _state_lock:
                             _processed_filenames[filename] = None
 
