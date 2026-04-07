@@ -19,7 +19,8 @@ BACKEND_URL        = os.getenv("BACKEND_URL", "").rstrip("/")
 POLL_INTERVAL      = int(os.getenv("POLL_INTERVAL_SECS", "2"))
 LOCAL_URL          = "http://localhost:8080"
 HOSTNAME           = socket.gethostname()
-STOP_GRACE_SECONDS = 120  # keep monitoring for 2 mins after stop to catch last segments
+STOP_GRACE_SECONDS  = 300  # keep monitoring for 5 mins after stop to catch last segments
+RETRYING_SKIP_AFTER = 300  # skip a file if it has been retrying for more than 5 mins
 
 if not BACKEND_URL:
     log.error("BACKEND_URL not set — exiting")
@@ -70,8 +71,9 @@ _current_operator_id   = None
 _current_operator_name = None
 _session_active        = False
 _session_stopped_at    = None   # timestamp when session was stopped (for grace period)
-_processed_filenames   = {}     # filename -> episode_id (to avoid duplicates + track for s3 update)
+_processed_filenames   = {}     # filename -> episode_id
 _pending_episodes      = []     # retry queue when backend is unreachable
+_retrying_since        = {}     # filename -> first time we saw it as "retrying"
 _state_lock            = threading.Lock()
 
 
@@ -222,17 +224,8 @@ def _upload_monitor():
             processed   = dict(_processed_filenames)
             pending     = list(_pending_episodes)
 
-        # Check if we're in grace period (session stopped but still watching for last segments)
-        in_grace = (
-            not active
-            and stopped_at is not None
-            and (datetime.now(timezone.utc) - stopped_at).total_seconds() < STOP_GRACE_SECONDS
-        )
-
-        # Skip if session not active and not in grace period
-        if not active and not in_grace:
-            continue
-
+        # Only skip if we have no task to report episodes for
+        # Do NOT check _session_active — segments may arrive after session stops
         if not task_id:
             continue
 
@@ -267,6 +260,18 @@ def _upload_monitor():
                     continue
 
                 already_saved = filename in processed
+
+                # Skip files stuck in retrying for too long (file probably deleted locally)
+                if status == "retrying":
+                    first_seen = _retrying_since.get(filename)
+                    if first_seen is None:
+                        with _state_lock:
+                            _retrying_since[filename] = datetime.now(timezone.utc)
+                    elif (datetime.now(timezone.utc) - first_seen).total_seconds() > RETRYING_SKIP_AFTER:
+                        log.warning(f"File stuck in retrying for too long — skipping: {filename}")
+                        with _state_lock:
+                            _processed_filenames[filename] = None  # mark as skip
+                        continue
 
                 # Save episode as soon as segment is locally ready
                 # queued    = local recording done, waiting to upload to S3
