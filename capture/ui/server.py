@@ -180,6 +180,7 @@ def start_session():
         on_frame_check   = None,
         on_complete      = _on_complete,
         upload_queue     = _upload_queue,
+        gpio             = _gpio,
     )
     _session.start()
     return {"ok": True, "session_id": _session.session_id}
