@@ -1,8 +1,8 @@
 [Unit]
 Description=App Backend Polling Agent for %i
-After=network-online.target capture-daemon@%i.service
+After=network-online.target capture-daemon.service
 Wants=network-online.target
-Requires=capture-daemon@%i.service
+Requires=capture-daemon.service
 
 [Service]
 Type=simple
