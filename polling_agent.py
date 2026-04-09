@@ -346,7 +346,7 @@ def poll():
         try:
             r = requests.get(
                 f"{BACKEND_URL}/api/v1/pi-commands/poll/{HOSTNAME}",
-                timeout=5,
+                timeout=15,
             )
 
             if r.status_code == 200:
