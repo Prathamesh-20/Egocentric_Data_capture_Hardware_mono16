@@ -7,8 +7,8 @@ import os
 
 # ── Paths ─────────────────────────────────────────────────────────
 OUTPUT_DIR   = "/mnt/ssd/recordings"
-ORBBEC_REC   = os.path.expanduser("~/OrbbecSDK_v2.7.6_202602021228_d712cda_linux_arm64/bin/ob_device_record_nogui")
-ORBBEC_LIB   = os.path.expanduser("~/OrbbecSDK_v2.7.6_202602021228_d712cda_linux_arm64/lib")
+ORBBEC_REC = os.path.expanduser("~/OrbbecSDK_v2_src/build/linux_arm64/bin/ob_device_record_nogui")
+ORBBEC_LIB = os.path.expanduser("~/OrbbecSDK_v2_src/build/linux_arm64/lib")
 
 # ── Camera devices (Kreo disabled) ────────────────────────────────
 KREO_ENABLED = False               # <<< Kreo cameras disabled
