@@ -101,7 +101,7 @@ def local_get(path: str) -> dict:
 # ── Backend helpers ────────────────────────────────────────────────
 def backend_post(path: str) -> dict:
     try:
-        r = requests.post(f"{BACKEND_URL}{path}", timeout=5)
+        r = requests.post(f"{BACKEND_URL}{path}", timeout=15)  
         return r.json() if r.status_code in (200, 201) else {}
     except requests.exceptions.ConnectionError:
         log.warning("Backend unreachable")
@@ -113,7 +113,7 @@ def backend_post(path: str) -> dict:
 
 def backend_post_json(path: str, data: dict) -> dict:
     try:
-        r = requests.post(f"{BACKEND_URL}{path}", json=data, timeout=10)
+        r = requests.post(f"{BACKEND_URL}{path}", json=data, timeout=15)  
         return r.json() if r.status_code in (200, 201) else {}
     except requests.exceptions.ConnectionError:
         log.warning("Backend unreachable")
@@ -125,7 +125,7 @@ def backend_post_json(path: str, data: dict) -> dict:
 
 def backend_patch_json(path: str, data: dict) -> dict:
     try:
-        r = requests.patch(f"{BACKEND_URL}{path}", json=data, timeout=10)
+        r = requests.patch(f"{BACKEND_URL}{path}", json=data, timeout=15) 
         return r.json() if r.status_code in (200, 201) else {}
     except requests.exceptions.ConnectionError:
         log.warning("Backend unreachable")
@@ -346,7 +346,7 @@ def poll():
         try:
             r = requests.get(
                 f"{BACKEND_URL}/api/v1/pi-commands/poll/{HOSTNAME}",
-                timeout=15,
+                timeout=5,
             )
 
             if r.status_code == 200:
