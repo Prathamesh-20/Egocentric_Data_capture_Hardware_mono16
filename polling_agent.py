@@ -28,11 +28,6 @@ if not BACKEND_URL:
 
 # ── Fetch AWS credentials from backend at startup ──────────────────
 def fetch_and_set_credentials():
-    """
-    Fetch AWS credentials from backend using hostname.
-    Non-blocking — if credentials are missing or backend unreachable,
-    just log and continue (local mode).
-    """
     url = f"{BACKEND_URL}/api/v1/pi-credentials/{HOSTNAME}"
     try:
         r = requests.get(url, timeout=5)
@@ -44,8 +39,6 @@ def fetch_and_set_credentials():
                 os.environ["AWS_REGION"]            = creds["aws_region"]
                 os.environ["AWS_BUCKET_NAME"]       = creds["aws_bucket_name"]
                 log.info("AWS credentials fetched from backend ✓")
-
-                # Push credentials to capture_daemon so it can upload to S3
                 local_post("/settings", json={
                     "AWS_ACCESS_KEY_ID":     creds["aws_access_key_id"],
                     "AWS_SECRET_ACCESS_KEY": creds["aws_secret_access_key"],
@@ -68,10 +61,11 @@ def fetch_and_set_credentials():
 _current_task_id       = None
 _current_operator_id   = None
 _current_operator_name = None
+_current_session_id    = None   # set after session starts — used to filter upload-status
 _session_active        = False
-_processed_filenames   = {}   # filename -> episode_id | None(s3 updated) | "skip"
-_pending_episodes      = []   # retry queue — each item has its own task_id
-_retrying_since        = {}   # filename -> datetime, to detect stuck retrying files
+_processed_filenames   = {}     # filename -> episode_id | None(s3 updated) | "skip"
+_pending_episodes      = []     # retry queue — each item has its own task_id
+_retrying_since        = {}     # filename -> datetime, to detect stuck retrying files
 _state_lock            = threading.Lock()
 
 
@@ -101,7 +95,7 @@ def local_get(path: str) -> dict:
 # ── Backend helpers ────────────────────────────────────────────────
 def backend_post(path: str) -> dict:
     try:
-        r = requests.post(f"{BACKEND_URL}{path}", timeout=15)  
+        r = requests.post(f"{BACKEND_URL}{path}", timeout=15)
         return r.json() if r.status_code in (200, 201) else {}
     except requests.exceptions.ConnectionError:
         log.warning("Backend unreachable")
@@ -113,7 +107,7 @@ def backend_post(path: str) -> dict:
 
 def backend_post_json(path: str, data: dict) -> dict:
     try:
-        r = requests.post(f"{BACKEND_URL}{path}", json=data, timeout=15)  
+        r = requests.post(f"{BACKEND_URL}{path}", json=data, timeout=15)
         return r.json() if r.status_code in (200, 201) else {}
     except requests.exceptions.ConnectionError:
         log.warning("Backend unreachable")
@@ -125,7 +119,7 @@ def backend_post_json(path: str, data: dict) -> dict:
 
 def backend_patch_json(path: str, data: dict) -> dict:
     try:
-        r = requests.patch(f"{BACKEND_URL}{path}", json=data, timeout=15) 
+        r = requests.patch(f"{BACKEND_URL}{path}", json=data, timeout=15)
         return r.json() if r.status_code in (200, 201) else {}
     except requests.exceptions.ConnectionError:
         log.warning("Backend unreachable")
@@ -138,7 +132,7 @@ def backend_patch_json(path: str, data: dict) -> dict:
 # ── Handle start command ───────────────────────────────────────────
 def handle_start(data: dict):
     global _current_task_id, _current_operator_id, _current_operator_name
-    global _session_active, _processed_filenames
+    global _session_active, _processed_filenames, _current_session_id
 
     task_id       = data.get("task_id", "")
     operator_id   = data.get("operator_id", "")
@@ -151,12 +145,10 @@ def handle_start(data: dict):
         _current_task_id       = task_id
         _current_operator_id   = operator_id
         _current_operator_name = operator_name
-        _processed_filenames   = {}   # reset for new task — old filenames no longer relevant
-        # NOTE: _pending_episodes NOT reset — old task's pending episodes
-        # still have their own task_id and will be retried correctly
-        # NOTE: _retrying_since NOT reset — carry over stuck file tracking
+        _processed_filenames   = {}    # reset for new task
+        _retrying_since        = {}    # reset — new task
+        _current_session_id    = None  # will be set after session starts
 
-    # Send task + operator info to capture_daemon before starting session
     local_post("/settings", json={
         "operator_id":           operator_id,
         "operator_name":         operator_name,
@@ -171,12 +163,12 @@ def handle_start(data: dict):
     result = local_post("/session/start")
     if result:
         with _state_lock:
-            _session_active = True
+            _session_active     = True
+            _current_session_id = result.get("session_id", "")  # session ID save karo
         log.info(f"Session started: {result.get('session_id', 'unknown')}")
     else:
         log.error(f"Session start failed: {result}")
 
-    # Mark command as completed in backend
     if command_id:
         backend_post(f"/api/v1/pi-commands/complete/{command_id}")
 
@@ -193,7 +185,6 @@ def handle_stop(data: dict):
     with _state_lock:
         _session_active = False
 
-    # Mark command as completed in backend
     if command_id:
         backend_post(f"/api/v1/pi-commands/complete/{command_id}")
 
@@ -204,18 +195,9 @@ def handle_stop(data: dict):
 def _upload_monitor():
     """
     Runs in a background thread — never stops.
-    Watches capture_daemon's /upload-status for .bag segments.
-
-    Key design decisions:
-    - Does NOT check _session_active — segments arrive after session stops,
-      so we always monitor as long as task_id is set.
-    - Saves episode to DB as soon as segment is locally ready (queued/uploading/retrying),
-      without waiting for S3 upload — so target can be met immediately.
-    - Once S3 upload completes, updates the episode with s3_key.
-    - Retries failed backend calls — each pending episode carries its own task_id
-      so old task episodes don't bleed into new tasks.
-    - Skips .bag files stuck in "retrying" for > RETRYING_SKIP_AFTER seconds
-      (likely deleted locally) so they don't block the queue.
+    Only processes .bag files from the current session (session_id filter).
+    Saves episode to DB as soon as segment is locally ready.
+    Retries failed backend calls with their own task_id.
     """
     log.info("Upload monitor started")
 
@@ -223,10 +205,11 @@ def _upload_monitor():
         time.sleep(3)
 
         with _state_lock:
-            task_id     = _current_task_id
-            operator_id = _current_operator_id
-            processed   = dict(_processed_filenames)
-            pending     = list(_pending_episodes)
+            task_id        = _current_task_id
+            operator_id    = _current_operator_id
+            session_id     = _current_session_id
+            processed      = dict(_processed_filenames)
+            pending        = list(_pending_episodes)
             retrying_since = dict(_retrying_since)
 
         # ── Retry pending episodes from previous backend failures ──
@@ -238,7 +221,6 @@ def _upload_monitor():
                 if result.get("episode_id"):
                     log.info(f"Retry success: {ep.get('filename')} (task={ep.get('task_id')})")
                     with _state_lock:
-                        # Only update processed if this file belongs to current task
                         if ep.get("task_id") == task_id:
                             _processed_filenames[ep["filename"]] = result["episode_id"]
                     if result.get("target_met"):
@@ -249,7 +231,6 @@ def _upload_monitor():
                 _pending_episodes.clear()
                 _pending_episodes.extend(still_pending)
 
-        # No task — nothing to monitor
         if not task_id:
             continue
 
@@ -261,31 +242,28 @@ def _upload_monitor():
                 status   = item.get("status", "")
                 s3_key   = item.get("s3_key", "") or ""
 
-                # Only care about .bag files (video segments)
                 if not filename.endswith(".bag"):
+                    continue
+
+                # Only process files from current session
+                if session_id and session_id not in filename:
                     continue
 
                 already_saved = filename in processed
 
-                # ── Skip files stuck in retrying (file probably deleted locally) ──
+                # ── Skip files stuck in retrying ──
                 if status == "retrying" and not already_saved:
                     first_seen = retrying_since.get(filename)
                     if first_seen is None:
                         with _state_lock:
                             _retrying_since[filename] = datetime.now(timezone.utc)
                     elif (datetime.now(timezone.utc) - first_seen).total_seconds() > RETRYING_SKIP_AFTER:
-                        log.warning(f"File stuck in retrying for >{RETRYING_SKIP_AFTER}s — skipping: {filename}")
+                        log.warning(f"File stuck in retrying >{RETRYING_SKIP_AFTER}s — skipping: {filename}")
                         with _state_lock:
                             _processed_filenames[filename] = "skip"
                         continue
 
                 # ── Step 1: Save episode as soon as segment is locally ready ──
-                # queued    = local recording done, waiting for S3 upload to start
-                # uploading = S3 upload in progress
-                # retrying  = S3 upload failed, retrying — local file still exists
-                # complete  = S3 upload done
-                # We save at queued/uploading/retrying so target can be met
-                # without waiting for S3 (which can take minutes for 1.1GB files)
                 if not already_saved and status in ("queued", "uploading", "retrying", "complete"):
                     log.info(f"Segment ready — saving episode: {filename} (status={status})")
 
@@ -306,7 +284,6 @@ def _upload_monitor():
                         if result.get("target_met"):
                             log.info(f"Target met for task {task_id} — backend will send stop command")
                     else:
-                        # Backend unreachable or error — queue for retry
                         log.warning(f"Episode save failed — queuing for retry: {filename}")
                         with _state_lock:
                             _pending_episodes.append(ep_data)
@@ -314,13 +291,12 @@ def _upload_monitor():
                 # ── Step 2: S3 upload finished — update episode with s3_key ──
                 elif already_saved and status == "complete" and s3_key:
                     episode_id = processed.get(filename)
-                    if episode_id and episode_id != "skip":
+                    if episode_id and episode_id not in (None, "skip"):
                         log.info(f"S3 upload complete — updating s3_key for episode {episode_id}")
                         backend_patch_json(
                             f"/api/v1/pi-episodes/{episode_id}/update-s3",
                             {"s3_key": s3_key}
                         )
-                        # Mark as None so we don't update again
                         with _state_lock:
                             _processed_filenames[filename] = None
 
@@ -337,7 +313,6 @@ def poll():
     log.info(f"  Interval : {POLL_INTERVAL}s")
     log.info("=" * 50)
 
-    # Start upload monitor in background — runs forever
     threading.Thread(
         target=_upload_monitor, daemon=True, name="upload-monitor"
     ).start()
@@ -346,7 +321,7 @@ def poll():
         try:
             r = requests.get(
                 f"{BACKEND_URL}/api/v1/pi-commands/poll/{HOSTNAME}",
-                timeout=5,
+                timeout=15,
             )
 
             if r.status_code == 200:
@@ -366,7 +341,6 @@ def poll():
                         if command_id:
                             backend_post(f"/api/v1/pi-commands/complete/{command_id}")
                         command = None
-                # ────────────────────────────────────────────────────
 
                 if command == "start":
                     handle_start(data)
