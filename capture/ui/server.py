@@ -46,12 +46,14 @@ state = {
     "detection_method": None,
 }
 
-_session:        Optional[SessionV2] = None
-_ws_clients      = set()
-_ws_lock         = threading.Lock()
-_upload_queue    = UploadQueue()
-_session_history = []
-_gpio            = None
+_session:         Optional[SessionV2] = None
+_ws_clients       = set()
+_ws_lock          = threading.Lock()
+_upload_queue     = UploadQueue()
+_session_history  = []
+_gpio             = None
+_failed_segments  = []  # track failed segments to notify polling agent
+_failed_seg_lock  = threading.Lock()
 
 
 def _set_state(**kwargs):
@@ -132,12 +134,27 @@ def start_session():
     if not settings["operator_id"].strip():
         return JSONResponse({"error": "Operator ID required"}, 400)
 
+    # Reset failed segments for new session
+    with _failed_seg_lock:
+        _failed_segments.clear()
+
     _upload_queue.on_status_change = lambda s: _broadcast()
     _upload_queue.start()
 
     def _on_state(status, detail, **extra):
         seg_idx = extra.get("segment_idx", state.get("current_segment", -1))
         _set_state(status=status, message=detail, current_segment=seg_idx)
+
+        # Track failed segments — bag_small_warning or bag_empty_warning
+        if status in ("bag_small_warning", "bag_empty_warning"):
+            with _failed_seg_lock:
+                _failed_segments.append({
+                    "seg_idx":    seg_idx,
+                    "reason":     detail,
+                    "session_id": state.get("session_id"),
+                    "reported":   False,  # set to True once polling agent reports to backend
+                })
+            log.warning(f"Failed segment recorded: seg_{seg_idx} — {detail}")
 
     def _on_segment_update(seg_idx, seg_status, wrist_ok):
         segs  = state.get("segments", [])
@@ -212,7 +229,6 @@ async def update_settings(request: Request):
         if key in req:
             settings[key] = req[key]
 
-    # AWS credentials — inject into environment so uploader picks them up
     for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_BUCKET_NAME"):
         if req.get(key):
             os.environ[key] = req[key]
@@ -226,7 +242,24 @@ async def update_settings(request: Request):
 # ── Upload Status ─────────────────────────────────────────────────
 @app.get("/upload-status")
 def upload_status():
-    return _upload_queue.get_status()
+    status_data = _upload_queue.get_status()
+    # Include failed segments so polling agent can report them to backend
+    with _failed_seg_lock:
+        status_data["failed_segments"] = [
+            s for s in _failed_segments if not s["reported"]
+        ]
+    return status_data
+
+
+# ── Mark failed segment as reported ───────────────────────────────
+@app.post("/segment/reported/{seg_idx}")
+def mark_segment_reported(seg_idx: int):
+    """Polling agent calls this after reporting a failed segment to backend."""
+    with _failed_seg_lock:
+        for s in _failed_segments:
+            if s["seg_idx"] == seg_idx:
+                s["reported"] = True
+    return {"ok": True}
 
 
 # ── Session History ───────────────────────────────────────────────
@@ -286,5 +319,5 @@ def shutdown_event():
 
 
 def run():
-    _upload_queue.start()  
+    _upload_queue.start()
     uvicorn.run(app, host=UI_HOST, port=UI_PORT, log_level="warning")
