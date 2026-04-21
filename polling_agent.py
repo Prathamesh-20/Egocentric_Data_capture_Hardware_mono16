@@ -19,7 +19,7 @@ BACKEND_URL         = os.getenv("BACKEND_URL", "").rstrip("/")
 POLL_INTERVAL       = int(os.getenv("POLL_INTERVAL_SECS", "2"))
 LOCAL_URL           = "http://localhost:8080"
 HOSTNAME            = socket.gethostname()
-RETRYING_SKIP_AFTER = 300  # skip a .bag file stuck in "retrying" for more than 5 mins
+MIN_SEGMENT_SIZE_BYTES = 800 * 1024 * 1024 
 
 if not BACKEND_URL:
     log.error("BACKEND_URL not set — exiting")
@@ -265,7 +265,16 @@ def _upload_monitor():
 
                 # ── Step 1: Save episode as soon as segment is locally ready ──
                 if not already_saved and status in ("queued", "uploading", "retrying", "complete"):
-                    log.info(f"Segment ready — saving episode: {filename} (status={status})")
+
+                    # Validate segment size — must be at least 800 MB
+                    size_bytes = item.get("size_bytes", 0)
+                    if size_bytes < MIN_SEGMENT_SIZE_BYTES:
+                        log.warning(f"Segment too small ({size_bytes / 1024 / 1024:.1f} MB < 800 MB) — skipping: {filename}")
+                        with _state_lock:
+                            _processed_filenames[filename] = "skip"
+                        continue
+
+                    log.info(f"Segment ready — saving episode: {filename} (status={status}, size={size_bytes / 1024 / 1024:.1f} MB)")
 
                     ep_data = {
                         "task_id":     task_id,
