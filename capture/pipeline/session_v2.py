@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 MIN_DISK_SPACE_GB    = 5
 MIN_DISK_SPACE_BYTES = MIN_DISK_SPACE_GB * 1024 * 1024 * 1024
 MAX_CONSECUTIVE_FAILURES = 3
+MIN_SEGMENT_SIZE_MB  = 800  
 
 
 @dataclass
@@ -38,8 +39,8 @@ class SessionV2:
 
     def __init__(self,
                  operator_id:       str = "",
-                 operator_name:     str = "",   # ← for S3 folder structure
-                 task_id:           str = "",   # ← for S3 folder structure
+                 operator_name:     str = "",
+                 task_id:           str = "",
                  activity_label:    str = "",
                  segment_duration:  int = SEGMENT_DURATION,
                  session_duration:  int = SESSION_DURATION,
@@ -112,7 +113,7 @@ class SessionV2:
 
     def _check_disk_space(self) -> bool:
         try:
-            usage  = shutil.disk_usage(OUTPUT_DIR)
+            usage   = shutil.disk_usage(OUTPUT_DIR)
             free_gb = usage.free / (1024 * 1024 * 1024)
             if usage.free < MIN_DISK_SPACE_BYTES:
                 log.error(f"DISK SPACE LOW — only {free_gb:.1f} GB free. Stopping session!")
@@ -157,7 +158,6 @@ class SessionV2:
                 break
             actual_duration = min(self.segment_duration, remaining)
 
-            # GPIO: segment starting
             if self.gpio:
                 self.gpio.beep_1x()
                 self.gpio.set_recording()
@@ -169,7 +169,7 @@ class SessionV2:
                         f"Segment {seg_idx + 1}/{self.max_segments} — {int(actual_duration)}s",
                         segment_idx=seg_idx)
 
-            files    = self._record_segment(sid, seg_idx, actual_duration)
+            files        = self._record_segment(sid, seg_idx, actual_duration)
             seg.end_time = time.time()
             seg.files    = files
 
@@ -197,7 +197,6 @@ class SessionV2:
 
             consecutive_failures = 0
 
-            # GPIO: segment complete
             if self.gpio:
                 self.gpio.set_segment_gap()
                 self.gpio.beep_2x()
@@ -216,7 +215,6 @@ class SessionV2:
             self._notify_segment(seg)
             seg_idx += 1
 
-            # Inter-segment gap
             if (not self._stop.is_set()
                     and time.time() < session_deadline
                     and seg_idx < self.max_segments):
@@ -228,11 +226,10 @@ class SessionV2:
         n_complete = sum(1 for s in self.segments if s.status == "complete")
         n_failed   = sum(1 for s in self.segments if s.status == "failed")
 
-        # GPIO: switch to uploading indicator
         if self.gpio:
             self.gpio.set_uploading()
 
-        # Clean up failed bag files
+        # Clean up failed bag files locally
         for seg in self.segments:
             if seg.status == "failed":
                 bag_file = seg.files.get("bag", "")
@@ -351,20 +348,26 @@ class SessionV2:
         if not bag_path or not os.path.exists(bag_path):
             log.error(f"Segment {seg_idx}: bag file does not exist: {bag_path}")
             return False
-        size_bytes      = os.path.getsize(bag_path)
-        size_mb         = size_bytes / (1024 * 1024)
-        min_expected_mb = max(duration * 1.0, 10)
-        log.info(f"Segment {seg_idx} bag: {size_mb:.1f} MB (expected >= {min_expected_mb:.0f} MB)")
+
+        size_bytes = os.path.getsize(bag_path)
+        size_mb    = size_bytes / (1024 * 1024)
+
+        log.info(f"Segment {seg_idx} bag: {size_mb:.1f} MB (minimum required: {MIN_SEGMENT_SIZE_MB} MB)")
+
+        # Empty bag — USB/camera issue
         if size_mb < 0.1:
             log.error(f"BAG EMPTY — {size_bytes} bytes. USB power issue?")
             self._state("bag_empty_warning",
                         f"Segment {seg_idx + 1}: BAG EMPTY — USB power issue!")
             return False
-        if size_mb < min_expected_mb:
-            log.warning(f"BAG SMALL — {size_mb:.1f} MB for {duration:.0f}s")
+
+        # Too small — incomplete recording, do not count as episode
+        if size_mb < MIN_SEGMENT_SIZE_MB:
+            log.error(f"BAG TOO SMALL — {size_mb:.1f} MB < {MIN_SEGMENT_SIZE_MB} MB — episode not saved")
             self._state("bag_small_warning",
-                        f"Segment {seg_idx + 1}: bag only {size_mb:.1f} MB — partial?")
-            return True
+                        f"Segment {seg_idx + 1}: only {size_mb:.1f} MB — episode not saved, please record again")
+            return False
+
         log.info(f"Segment {seg_idx} bag PASSED: {size_mb:.1f} MB")
         return True
 
