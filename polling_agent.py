@@ -19,7 +19,7 @@ BACKEND_URL         = os.getenv("BACKEND_URL", "").rstrip("/")
 POLL_INTERVAL       = int(os.getenv("POLL_INTERVAL_SECS", "2"))
 LOCAL_URL           = "http://localhost:8080"
 HOSTNAME            = socket.gethostname()
-MIN_SEGMENT_SIZE_BYTES = 800 * 1024 * 1024 
+MIN_SEGMENT_SIZE_BYTES = 800 * 1024 * 1024  
 
 if not BACKEND_URL:
     log.error("BACKEND_URL not set — exiting")
@@ -164,7 +164,7 @@ def handle_start(data: dict):
     if result:
         with _state_lock:
             _session_active     = True
-            _current_session_id = result.get("session_id", "")  # session ID save karo
+            _current_session_id = result.get("session_id", "")  # session ID save 
         log.info(f"Session started: {result.get('session_id', 'unknown')}")
     else:
         log.error(f"Session start failed: {result}")
@@ -235,9 +235,33 @@ def _upload_monitor():
             continue
 
         try:
-            items = local_get("/upload-status").get("items", [])
+            items = local_get("/upload-status")
+            failed_segs = items.get("failed_segments", [])
+            upload_items = items.get("items", [])
 
-            for item in items:
+            # ── Report failed segments to backend ──────────────────
+            for seg in failed_segs:
+                seg_idx    = seg.get("seg_idx", -1)
+                reason     = seg.get("reason", "")
+                session_id = seg.get("session_id", "")
+                log.warning(f"Reporting failed segment {seg_idx} to backend: {reason}")
+
+                result = backend_post_json("/api/v1/pi-episodes/", {
+                    "task_id":     task_id,
+                    "operator_id": operator_id,
+                    "s3_key":      None,
+                    "filename":    f"session_{session_id}_seg{seg_idx:03d}_failed.bag",
+                    "notes":       f"FAILED: {reason}",
+                    "hostname":    HOSTNAME,
+                    "is_success":  False,
+                })
+
+                if result.get("episode_id"):
+                    # Mark as reported so capture_daemon doesn't report again
+                    local_post(f"/segment/reported/{seg_idx}")
+                    log.info(f"Failed segment {seg_idx} reported to backend")
+
+            for item in upload_items:
                 filename = item.get("filename", "")
                 status   = item.get("status", "")
                 s3_key   = item.get("s3_key", "") or ""
