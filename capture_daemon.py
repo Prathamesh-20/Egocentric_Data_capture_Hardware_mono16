@@ -26,7 +26,7 @@ from capture.gpio_controller import GPIOController
 gpio = GPIOController()
 
 # ── Upload monitor ────────────────────────────────────────────────
-_upload_monitor_active = threading.Event()
+#_upload_monitor_active = threading.Event()
 
 
 def _monitor_uploads(upload_queue):
