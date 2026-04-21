@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 MIN_DISK_SPACE_GB    = 5
 MIN_DISK_SPACE_BYTES = MIN_DISK_SPACE_GB * 1024 * 1024 * 1024
 MAX_CONSECUTIVE_FAILURES = 3
-MIN_SEGMENT_SIZE_MB  = 800  
+MIN_SEGMENT_SIZE_MB  = 800  # Minimum valid segment size — smaller = failed episode
 
 
 @dataclass
@@ -41,6 +41,8 @@ class SessionV2:
                  operator_id:       str = "",
                  operator_name:     str = "",
                  task_id:           str = "",
+                 task_name:         str = "",   # used for S3 folder structure
+                 environment:       str = "",   # used for S3 folder structure
                  activity_label:    str = "",
                  segment_duration:  int = SEGMENT_DURATION,
                  session_duration:  int = SESSION_DURATION,
@@ -55,6 +57,8 @@ class SessionV2:
         self.operator_id      = operator_id
         self.operator_name    = operator_name
         self.task_id          = task_id
+        self.task_name        = task_name       # used for S3 folder structure
+        self.environment      = environment     # used for S3 folder structure
         self.activity_label   = activity_label
         self.segment_duration = segment_duration
         self.session_duration = session_duration
@@ -209,6 +213,8 @@ class SessionV2:
                     sid, seg_idx, files,
                     operator_name=self.operator_name,
                     task_id=self.task_id,
+                    task_name=self.task_name,      # pass for S3 folder structure
+                    environment=self.environment,  # pass for S3 folder structure
                 )
 
             seg.status = "complete"
