@@ -61,11 +61,13 @@ def fetch_and_set_credentials():
 _current_task_id       = None
 _current_operator_id   = None
 _current_operator_name = None
-_current_session_id    = None   # set after session starts — used to filter upload-status
+_current_task_name     = None  
+_current_environment   = None  
+_current_session_id    = None
 _session_active        = False
-_processed_filenames   = {}     # filename -> episode_id | None(s3 updated) | "skip"
-_pending_episodes      = []     # retry queue — each item has its own task_id
-_retrying_since        = {}     # filename -> datetime, to detect stuck retrying files
+_processed_filenames   = {}
+_pending_episodes      = []
+_retrying_since        = {}
 _state_lock            = threading.Lock()
 
 
@@ -132,22 +134,27 @@ def backend_patch_json(path: str, data: dict) -> dict:
 # ── Handle start command ───────────────────────────────────────────
 def handle_start(data: dict):
     global _current_task_id, _current_operator_id, _current_operator_name
+    global _current_task_name, _current_environment
     global _session_active, _processed_filenames, _current_session_id
 
     task_id       = data.get("task_id", "")
     operator_id   = data.get("operator_id", "")
     operator_name = data.get("operator_name", "")
+    task_name     = data.get("task_name", "")    
+    environment   = data.get("environment", "")  
     command_id    = data.get("command_id", "")
 
-    log.info(f"START — task={task_id} operator={operator_name}")
+    log.info(f"START — task={task_id} operator={operator_name} task_name={task_name} env={environment}")
 
     with _state_lock:
         _current_task_id       = task_id
         _current_operator_id   = operator_id
         _current_operator_name = operator_name
-        _processed_filenames   = {}    # reset for new task
-        _retrying_since        = {}    # reset — new task
-        _current_session_id    = None  # will be set after session starts
+        _current_task_name     = task_name   
+        _current_environment   = environment  
+        _processed_filenames   = {}
+        _retrying_since        = {}
+        _current_session_id    = None
 
     local_post("/settings", json={
         "operator_id":           operator_id,
@@ -164,7 +171,7 @@ def handle_start(data: dict):
     if result:
         with _state_lock:
             _session_active     = True
-            _current_session_id = result.get("session_id", "")  # session ID save 
+            _current_session_id = result.get("session_id", "")
         log.info(f"Session started: {result.get('session_id', 'unknown')}")
     else:
         log.error(f"Session start failed: {result}")
@@ -207,6 +214,9 @@ def _upload_monitor():
         with _state_lock:
             task_id        = _current_task_id
             operator_id    = _current_operator_id
+            operator_name  = _current_operator_name
+            task_name      = _current_task_name    
+            environment    = _current_environment  
             session_id     = _current_session_id
             processed      = dict(_processed_filenames)
             pending        = list(_pending_episodes)
@@ -236,7 +246,7 @@ def _upload_monitor():
 
         try:
             items = local_get("/upload-status")
-            failed_segs = items.get("failed_segments", [])
+            failed_segs  = items.get("failed_segments", [])
             upload_items = items.get("items", [])
 
             # ── Report failed segments to backend ──────────────────
@@ -257,7 +267,6 @@ def _upload_monitor():
                 })
 
                 if result.get("episode_id"):
-                    # Mark as reported so capture_daemon doesn't report again
                     local_post(f"/segment/reported/{seg_idx}")
                     log.info(f"Failed segment {seg_idx} reported to backend")
 
@@ -269,7 +278,6 @@ def _upload_monitor():
                 if not filename.endswith(".bag"):
                     continue
 
-                # Only process files from current session
                 if session_id and session_id not in filename:
                     continue
 
@@ -290,7 +298,6 @@ def _upload_monitor():
                 # ── Step 1: Save episode as soon as segment is locally ready ──
                 if not already_saved and status in ("queued", "uploading", "retrying", "complete"):
 
-                    # Validate segment size — must be at least 800 MB
                     size_bytes = item.get("size_bytes", 0)
                     if size_bytes < MIN_SEGMENT_SIZE_BYTES:
                         log.warning(f"Segment too small ({size_bytes / 1024 / 1024:.1f} MB < 800 MB) — skipping: {filename}")
