@@ -144,10 +144,12 @@ def start_session():
         if _gpio is None:
             return
         pending = s["queued"] + s["uploading"] + s["retrying"]
+        log.info(f"[upload-status] pending={pending} was_pending={_upload_tracker['was_pending']}")
         if pending > 0:
             _upload_tracker["was_pending"] = True
         elif _upload_tracker["was_pending"]:
             if not (_session and _session.is_running()):
+                log.info("[upload-status] All uploads done — triggering set_upload_complete()")
                 _gpio.set_upload_complete()
             _upload_tracker["was_pending"] = False
 
