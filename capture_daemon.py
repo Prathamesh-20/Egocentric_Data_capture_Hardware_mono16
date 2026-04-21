@@ -25,36 +25,6 @@ log = logging.getLogger("daemon")
 from capture.gpio_controller import GPIOController
 gpio = GPIOController()
 
-# ── Upload monitor ────────────────────────────────────────────────
-#_upload_monitor_active = threading.Event()
-
-
-def _monitor_uploads(upload_queue):
-    """
-    Called after a session completes.
-    Polls upload queue every 2 seconds.
-    When all uploads finish → buzzer 5 seconds → auto-idle.
-    """
-    log.info("[upload-monitor] Watching for uploads to complete...")
-
-    while True:
-        time.sleep(2)
-        try:
-            status = upload_queue.get_status()
-        except Exception:
-            continue
-
-        pending = status["queued"] + status["uploading"] + status["retrying"]
-
-        if pending == 0 and status["total"] > 0:
-            log.info("[upload-monitor] All uploads complete!")
-            if gpio.available:
-                gpio.set_upload_complete()  # buzzer 5s, then auto-idle
-            break
-
-    _upload_monitor_active.clear()
-
-
 # ── Session control via buttons ───────────────────────────────────
 def _start_session_from_button():
     import requests
