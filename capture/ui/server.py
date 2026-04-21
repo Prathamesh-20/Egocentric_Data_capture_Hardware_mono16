@@ -30,6 +30,8 @@ settings = {
     "operator_name":    "",
     "task_id":          "",
     "activity_label":   "",
+    "task_name":        "",  # used for S3 folder structure
+    "environment":      "",  # used for S3 folder structure
 }
 
 # ── Global state ──────────────────────────────────────────────────
@@ -203,6 +205,8 @@ def start_session():
         operator_id      = settings["operator_id"],
         operator_name    = settings["operator_name"],
         task_id          = settings["task_id"],
+        task_name        = settings["task_name"],        # pass for S3 folder structure
+        environment      = settings["environment"],      # pass for S3 folder structure
         activity_label   = settings["activity_label"],
         segment_duration = settings["segment_duration"],
         session_duration = settings["session_duration"],
@@ -240,7 +244,8 @@ async def update_settings(request: Request):
         return JSONResponse({"error": "Invalid JSON"}, 400)
 
     for key in ("segment_duration", "session_duration", "mcap_enabled",
-                "operator_id", "operator_name", "task_id", "activity_label"):
+                "operator_id", "operator_name", "task_id", "activity_label",
+                "task_name", "environment"):  # task_name and environment added
         if key in req:
             settings[key] = req[key]
 
