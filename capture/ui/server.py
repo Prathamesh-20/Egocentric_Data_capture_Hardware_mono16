@@ -54,6 +54,7 @@ _session_history  = []
 _gpio             = None
 _failed_segments  = []  # track failed segments to notify polling agent
 _failed_seg_lock  = threading.Lock()
+_upload_tracker   = {"was_pending": False}
 
 
 def _set_state(**kwargs):
@@ -138,7 +139,19 @@ def start_session():
     with _failed_seg_lock:
         _failed_segments.clear()
 
-    _upload_queue.on_status_change = lambda s: _broadcast()
+    def _on_upload_status_change(s):
+        _broadcast()
+        if _gpio is None:
+            return
+        pending = s["queued"] + s["uploading"] + s["retrying"]
+        if pending > 0:
+            _upload_tracker["was_pending"] = True
+        elif _upload_tracker["was_pending"]:
+            if not (_session and _session.is_running()):
+                _gpio.set_upload_complete()
+            _upload_tracker["was_pending"] = False
+
+    _upload_queue.on_status_change = _on_upload_status_change
     _upload_queue.start()
 
     def _on_state(status, detail, **extra):
