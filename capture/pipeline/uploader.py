@@ -2,6 +2,7 @@
 S3 Upload Queue — background uploader with improved retry logic.
 """
 import os, time, logging, threading, glob
+from datetime import datetime
 from dataclasses import dataclass
 from typing import List, Optional, Callable
 from enum import Enum
@@ -89,6 +90,7 @@ class UploadQueue:
             log.warning(f"enqueue: file not found — {local_path}")
             return
 
+        # Move file to pending dir so it survives a reboot before upload completes
         pending_path = os.path.join(PENDING_DIR, os.path.basename(local_path))
         try:
             os.rename(local_path, pending_path)
@@ -116,15 +118,45 @@ class UploadQueue:
         log.info(f"Enqueued: {os.path.basename(pending_path)} → s3://{os.getenv('AWS_BUCKET_NAME', '?')}/{s3_key}")
 
     def enqueue_segment_files(self, session_id: str, segment_idx: int, files: dict,
-                              operator_name: str = "", task_id: str = ""):
+                              operator_name: str = "", task_id: str = "",
+                              task_name: str = "", environment: str = ""):
+        # Parse date from session_id (format: YYYYMMDD_HHMMSS) → 2025-01-21
+        try:
+            date_str = datetime.strptime(session_id[:8], "%Y%m%d").strftime("%Y-%m-%d")
+        except Exception:
+            date_str = session_id[:8]  # fallback if session_id format is unexpected
+
+        # Sanitize path components — replace spaces and slashes to avoid broken S3 keys
+        def _safe(s: str) -> str:
+            return s.replace("/", "_").replace(" ", "_").strip("_") or "unknown"
+
         for label, path in files.items():
-            if path and os.path.exists(path):
-                fname  = os.path.basename(path)
-                if operator_name and task_id:
-                    s3_key = f"{S3_PREFIX}{operator_name}/{task_id}/session_{session_id}/seg_{segment_idx:03d}/{fname}"
-                else:
-                    s3_key = f"{S3_PREFIX}{session_id}/seg_{segment_idx:03d}/{fname}"
-                self.enqueue(path, s3_key, segment_idx, session_id)
+            if not path or not os.path.exists(path):
+                continue
+
+            fname = os.path.basename(path)
+
+            # Only upload .bag and .csv files — skip everything else
+            if not (fname.endswith(".bag") or fname.endswith(".csv")):
+                continue
+
+            if task_name and environment and operator_name:
+                # Full structured path:
+                # raw-feed/egocentric/{task_name}/{environment}/{operator_name}/{date}/session_{id}/videos/{fname}
+                s3_key = (
+                    f"{S3_PREFIX}egocentric/"
+                    f"{_safe(task_name)}/"
+                    f"{_safe(environment)}/"
+                    f"{_safe(operator_name)}/"
+                    f"{date_str}/"
+                    f"session_{session_id}/"
+                    f"videos/{fname}"
+                )
+            else:
+                # Fallback to flat structure if metadata is missing
+                s3_key = f"{S3_PREFIX}{session_id}/seg_{segment_idx:03d}/{fname}"
+
+            self.enqueue(path, s3_key, segment_idx, session_id)
 
     def get_status(self) -> dict:
         with self._lock:
@@ -145,6 +177,7 @@ class UploadQueue:
     # ── Private ───────────────────────────────────────────────────
 
     def _resume_pending(self):
+        # On boot, re-queue any files that were in .pending_uploads but never finished uploading
         leftover = glob.glob(os.path.join(PENDING_DIR, "**", "*"), recursive=True)
         leftover = [f for f in leftover if os.path.isfile(f)]
         if not leftover:
@@ -173,7 +206,17 @@ class UploadQueue:
     def _get_s3(self):
         if self._s3 is None:
             import boto3
-            self._s3 = boto3.client("s3")
+            from botocore.config import Config
+            # Timeout config for large files on slow networks.
+            # read_timeout=300: if no data arrives for 5 min, upload fails cleanly
+            # instead of hanging indefinitely. retries=0 because we handle retries
+            # ourselves with exponential backoff below.
+            config = Config(
+                connect_timeout=60,
+                read_timeout=300,
+                retries={"max_attempts": 0},
+            )
+            self._s3 = boto3.client("s3", config=config)
             log.info("S3 client initialized")
         return self._s3
 
@@ -205,13 +248,14 @@ class UploadQueue:
 
         try:
             s3     = self._get_s3()
-            bucket = os.getenv("AWS_BUCKET_NAME")  # fetches at runtime
+            bucket = os.getenv("AWS_BUCKET_NAME")
             mb     = item.size_bytes / 1024 / 1024
             log.info(f"Uploading {os.path.basename(item.local_path)} ({mb:.1f} MB, attempt {item.attempts}) → {bucket}")
 
             last_notify = [0.0]
 
             def _cb(n):
+                # Called by boto3 after each chunk is sent — track upload progress
                 item.bytes_uploaded += n
                 if item.size_bytes > 0:
                     item.progress_pct = min(item.bytes_uploaded / item.size_bytes * 100, 100.0)
@@ -219,20 +263,34 @@ class UploadQueue:
                     last_notify[0] = time.time()
                     self._notify()
 
-            s3.upload_file(item.local_path, bucket, item.s3_key, Callback=_cb)  
+            # Multipart upload for large files (> 100 MB).
+            # A 1.1 GB file becomes ~22 chunks of 50 MB each.
+            # If one chunk fails, only that chunk is retried — not the whole file.
+            # max_concurrency=2 is conservative and safe on slow/mobile networks.
+            from boto3.s3.transfer import TransferConfig
+            transfer_config = TransferConfig(
+                multipart_threshold=100 * 1024 * 1024,  # files > 100 MB use multipart
+                multipart_chunksize=50 * 1024 * 1024,   # 50 MB per chunk
+                max_concurrency=2,
+            )
+
+            s3.upload_file(
+                item.local_path, bucket, item.s3_key,
+                Callback=_cb,
+                Config=transfer_config,
+            )
 
             item.progress_pct = 100.0
             item.status       = UploadStatus.COMPLETE
             item.error        = None
             log.info(f"Upload complete: {item.s3_key}")
 
-            # Delete local file after successful S3 upload to free up disk space
+            # Delete local file after successful upload to free disk space
             try:
                 os.remove(item.local_path)
                 log.info(f"Local file deleted: {os.path.basename(item.local_path)}")
             except Exception as e:
                 log.warning(f"Could not delete local file: {e}")
-
 
             if self.on_complete:
                 try:
@@ -241,6 +299,7 @@ class UploadQueue:
                     log.warning(f"on_complete callback failed: {e}")
 
         except Exception as e:
+            # Exponential backoff: 16s, 32s, 64s ... up to ~2.3 hours max
             log.error(f"Upload error: {e}")
             delay = min(16 * (2 ** min(item.attempts - 1, 9)), 8192)
             item.status = UploadStatus.RETRYING
