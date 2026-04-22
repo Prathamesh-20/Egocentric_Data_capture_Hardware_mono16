@@ -161,6 +161,8 @@ def handle_start(data: dict):
         "operator_name":         operator_name,
         "task_id":               task_id,
         "activity_label":        task_id,
+        "task_name":             task_name,    
+        "environment":           environment,
         "AWS_ACCESS_KEY_ID":     os.getenv("AWS_ACCESS_KEY_ID", ""),
         "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY", ""),
         "AWS_REGION":            os.getenv("AWS_REGION", ""),
