@@ -30,7 +30,7 @@ if not BACKEND_URL:
 def fetch_and_set_credentials():
     url = f"{BACKEND_URL}/api/v1/pi-credentials/{HOSTNAME}"
     try:
-        r = requests.get(url, timeout=5)
+        r = requests.get(url, timeout=15)
         if r.status_code == 200:
             creds = r.json()
             if creds.get("aws_access_key_id"):
