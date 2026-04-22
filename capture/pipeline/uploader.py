@@ -272,6 +272,17 @@ class UploadQueue:
         return None
 
     def _upload(self, item: UploadItem):
+        # If file was deleted locally, mark as failed and stop retrying
+        if not os.path.exists(item.local_path):
+            log.warning(f"File no longer exists, skipping: {os.path.basename(item.local_path)}")
+            item.status = UploadStatus.FAILED
+            item.error  = "File not found locally"
+            meta_path   = item.local_path + ".meta"
+            if os.path.exists(meta_path):
+                os.remove(meta_path)
+            self._notify()
+            return
+
         item.status         = UploadStatus.UPLOADING
         item.attempts      += 1
         item.bytes_uploaded = 0
