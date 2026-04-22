@@ -15,11 +15,12 @@ logging.basicConfig(
 log = logging.getLogger("polling-agent")
 
 # ── Config ─────────────────────────────────────────────────────────
-BACKEND_URL         = os.getenv("BACKEND_URL", "").rstrip("/")
-POLL_INTERVAL       = int(os.getenv("POLL_INTERVAL_SECS", "2"))
-LOCAL_URL           = "http://localhost:8080"
-HOSTNAME            = socket.gethostname()
-MIN_SEGMENT_SIZE_BYTES = 800 * 1024 * 1024  
+BACKEND_URL            = os.getenv("BACKEND_URL", "").rstrip("/")
+POLL_INTERVAL          = int(os.getenv("POLL_INTERVAL_SECS", "2"))
+LOCAL_URL              = "http://localhost:8080"
+HOSTNAME               = socket.gethostname()
+MIN_SEGMENT_SIZE_BYTES = 800 * 1024 * 1024
+RETRYING_SKIP_AFTER    = 300  # seconds — skip files stuck in retrying for over 5 minutes
 
 if not BACKEND_URL:
     log.error("BACKEND_URL not set — exiting")
@@ -30,7 +31,7 @@ if not BACKEND_URL:
 def fetch_and_set_credentials():
     url = f"{BACKEND_URL}/api/v1/pi-credentials/{HOSTNAME}"
     try:
-        r = requests.get(url, timeout=15)
+        r = requests.get(url, timeout=30)
         if r.status_code == 200:
             creds = r.json()
             if creds.get("aws_access_key_id"):
@@ -61,8 +62,8 @@ def fetch_and_set_credentials():
 _current_task_id       = None
 _current_operator_id   = None
 _current_operator_name = None
-_current_task_name     = None  
-_current_environment   = None  
+_current_task_name     = None
+_current_environment   = None
 _current_session_id    = None
 _session_active        = False
 _processed_filenames   = {}
@@ -140,8 +141,8 @@ def handle_start(data: dict):
     task_id       = data.get("task_id", "")
     operator_id   = data.get("operator_id", "")
     operator_name = data.get("operator_name", "")
-    task_name     = data.get("task_name", "")    
-    environment   = data.get("environment", "")  
+    task_name     = data.get("task_name", "")
+    environment   = data.get("environment", "")
     command_id    = data.get("command_id", "")
 
     log.info(f"START — task={task_id} operator={operator_name} task_name={task_name} env={environment}")
@@ -150,8 +151,8 @@ def handle_start(data: dict):
         _current_task_id       = task_id
         _current_operator_id   = operator_id
         _current_operator_name = operator_name
-        _current_task_name     = task_name   
-        _current_environment   = environment  
+        _current_task_name     = task_name
+        _current_environment   = environment
         _processed_filenames   = {}
         _retrying_since        = {}
         _current_session_id    = None
@@ -161,7 +162,7 @@ def handle_start(data: dict):
         "operator_name":         operator_name,
         "task_id":               task_id,
         "activity_label":        task_id,
-        "task_name":             task_name,    
+        "task_name":             task_name,
         "environment":           environment,
         "AWS_ACCESS_KEY_ID":     os.getenv("AWS_ACCESS_KEY_ID", ""),
         "AWS_SECRET_ACCESS_KEY": os.getenv("AWS_SECRET_ACCESS_KEY", ""),
@@ -217,8 +218,8 @@ def _upload_monitor():
             task_id        = _current_task_id
             operator_id    = _current_operator_id
             operator_name  = _current_operator_name
-            task_name      = _current_task_name    
-            environment    = _current_environment  
+            task_name      = _current_task_name
+            environment    = _current_environment
             session_id     = _current_session_id
             processed      = dict(_processed_filenames)
             pending        = list(_pending_episodes)
@@ -247,7 +248,7 @@ def _upload_monitor():
             continue
 
         try:
-            items = local_get("/upload-status")
+            items        = local_get("/upload-status")
             failed_segs  = items.get("failed_segments", [])
             upload_items = items.get("items", [])
 
@@ -278,6 +279,11 @@ def _upload_monitor():
                 s3_key   = item.get("s3_key", "") or ""
 
                 if not filename.endswith(".bag"):
+                    continue
+
+                # Skip resumed files — these are from previous sessions
+                # and should not be counted as episodes for the current task
+                if item.get("session_id") == "resumed":
                     continue
 
                 if session_id and session_id not in filename:
