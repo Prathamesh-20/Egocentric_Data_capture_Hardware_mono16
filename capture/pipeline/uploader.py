@@ -1,7 +1,7 @@
 """
 S3 Upload Queue — background uploader with improved retry logic.
 """
-import os, time, logging, threading, glob
+import os, time, logging, threading, glob, json
 from datetime import datetime
 from dataclasses import dataclass
 from typing import List, Optional, Callable
@@ -98,6 +98,20 @@ class UploadQueue:
             log.error(f"Could not move to pending: {e}")
             pending_path = local_path
 
+        # Save metadata alongside the file so boot resume restores the correct
+        # s3_key, session_id, and segment_idx — without this, resumed files
+        # go to the wrong task/operator folder
+        meta_path = pending_path + ".meta"
+        try:
+            with open(meta_path, "w") as f:
+                json.dump({
+                    "s3_key":      s3_key,
+                    "segment_idx": segment_idx,
+                    "session_id":  session_id,
+                }, f)
+        except Exception as e:
+            log.warning(f"Could not save upload metadata: {e}")
+
         size = 0
         try:
             size = os.path.getsize(pending_path)
@@ -177,23 +191,41 @@ class UploadQueue:
     # ── Private ───────────────────────────────────────────────────
 
     def _resume_pending(self):
-        # On boot, re-queue any files that were in .pending_uploads but never finished uploading
+        # On boot, re-queue any files that were in .pending_uploads but never finished.
+        # Read the .meta file to restore the original s3_key/session_id/segment_idx
+        # so the file goes to the correct task and operator folder, not a generic "resumed/" path.
         leftover = glob.glob(os.path.join(PENDING_DIR, "**", "*"), recursive=True)
-        leftover = [f for f in leftover if os.path.isfile(f)]
+        leftover = [f for f in leftover if os.path.isfile(f) and not f.endswith(".meta")]
         if not leftover:
             return
+
         log.info(f"Boot resume: found {len(leftover)} pending file(s) — re-queuing")
         for path in leftover:
-            fname  = os.path.basename(path)
-            s3_key = f"{S3_PREFIX}resumed/{fname}"
-            item   = UploadItem(
+            fname     = os.path.basename(path)
+            meta_path = path + ".meta"
+            try:
+                with open(meta_path) as f:
+                    meta = json.load(f)
+                s3_key      = meta["s3_key"]
+                segment_idx = meta.get("segment_idx", -1)
+                session_id  = meta.get("session_id", "resumed")
+                log.info(f"Boot resume: restored metadata for {fname} → {s3_key}")
+            except Exception:
+                # No meta file — fallback for files enqueued before this fix was deployed
+                s3_key      = f"{S3_PREFIX}resumed/{fname}"
+                segment_idx = -1
+                session_id  = "resumed"
+                log.warning(f"Boot resume: no metadata for {fname} — using fallback path")
+
+            item = UploadItem(
                 local_path=path,
                 s3_key=s3_key,
                 size_bytes=os.path.getsize(path),
-                segment_idx=-1,
-                session_id="resumed",
+                segment_idx=segment_idx,
+                session_id=session_id,
             )
             self._queue.append(item)
+
         log.info("Boot resume: re-queued successfully")
 
     def _notify(self):
@@ -225,7 +257,7 @@ class UploadQueue:
             self._event.wait(timeout=2)
             self._event.clear()
             if not os.getenv("AWS_BUCKET_NAME"):
-                continue  
+                continue  # credentials not yet available, wait
             while not self._stop.is_set():
                 item = self._next_pending()
                 if item is None:
@@ -285,10 +317,13 @@ class UploadQueue:
             item.error        = None
             log.info(f"Upload complete: {item.s3_key}")
 
-            # Delete local file after successful upload to free disk space
+            # Delete local file and its metadata after successful upload
             try:
                 os.remove(item.local_path)
                 log.info(f"Local file deleted: {os.path.basename(item.local_path)}")
+                meta_path = item.local_path + ".meta"
+                if os.path.exists(meta_path):
+                    os.remove(meta_path)
             except Exception as e:
                 log.warning(f"Could not delete local file: {e}")
 
