@@ -162,8 +162,8 @@ def start_session():
         seg_idx = extra.get("segment_idx", state.get("current_segment", -1))
         _set_state(status=status, message=detail, current_segment=seg_idx)
 
-        # Track failed segments — bag_small_warning or bag_empty_warning
-        if status in ("bag_small_warning", "bag_empty_warning"):
+        # Track failed segments — mcap_small_warning or mcap_empty_warning
+        if status in ("mcap_small_warning", "mcap_empty_warning"):
             with _failed_seg_lock:
                 _failed_segments.append({
                     "seg_idx":    seg_idx,

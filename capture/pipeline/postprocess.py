@@ -1,5 +1,17 @@
 """
-Post-processing pipeline:
+DEPRECATED — not part of the live capture pipeline.
+
+Since the mcap-pipeline branch, segments are recorded directly to .mcap on the
+Pi by ob_device_record_mcap_nogui (C++), so these bag→MP4 and bag→MCAP
+converters are NOT called during a normal session. session_v2.py writes .mcap
+files and the upload queue pushes them straight to S3.
+
+This file is retained only for:
+  - One-off conversion of legacy .bag files captured before the direct-MCAP
+    pipeline existed.
+  - Reference if you later add an mcap→MP4 preview converter (drop it in here).
+
+Original purpose (legacy):
   1. bag → orbbec_color.mp4 + orbbec_depth.mp4
   2. All 4 feeds → combined 2x2 grid MP4
 """

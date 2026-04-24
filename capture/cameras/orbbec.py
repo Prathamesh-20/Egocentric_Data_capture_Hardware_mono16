@@ -1,6 +1,6 @@
 """
-Orbbec bag recorder — wraps ob_device_record_nogui via PTY.
-Provides clean start/stop with no bag corruption.
+Orbbec MCAP recorder — wraps ob_device_record_mcap_nogui via PTY.
+Provides clean start/stop with no mcap corruption.
 """
 import os, time, select, subprocess, threading, pty, logging
 
@@ -10,12 +10,12 @@ DEVICE_RELEASE_S = 6.0   # wait after FOV check (orbbec_stream) releases device
 
 
 class OrbbecRecorder:
-    def __init__(self, bag_path: str, orbbec_rec: str, orbbec_lib: str):
-        self.bag_path   = bag_path
-        self.orbbec_rec = orbbec_rec
-        self.orbbec_lib = orbbec_lib
-        self._proc      = None
-        self._master_fd = None
+    def __init__(self, output_path: str, orbbec_rec: str, orbbec_lib: str):
+        self.output_path = output_path
+        self.orbbec_rec  = orbbec_rec
+        self.orbbec_lib  = orbbec_lib
+        self._proc       = None
+        self._master_fd  = None
 
     def start(self) -> bool:
         """Start recording. Returns True if started successfully."""
@@ -49,19 +49,19 @@ class OrbbecRecorder:
             self.stop()
             return False
 
-        os.write(master_fd, f"{self.bag_path}\n".encode())
+        os.write(master_fd, f"{self.output_path}\n".encode())
 
         if not self._read_until("started", timeout=15):
             log.error("Orbbec: recorder did not start")
             self.stop()
             return False
 
-        log.info(f"Orbbec recording -> {self.bag_path}")
+        log.info(f"Orbbec recording -> {self.output_path}")
         threading.Thread(target=self._drain, daemon=True).start()
         return True
 
     def stop(self):
-        """Send q to finalize bag cleanly, then terminate."""
+        """Send q to finalize mcap cleanly, then terminate."""
         if self._master_fd:
             try: os.write(self._master_fd, b"q\n"); time.sleep(2)
             except OSError: pass
@@ -73,7 +73,7 @@ class OrbbecRecorder:
             try: os.close(self._master_fd)
             except: pass
         self._proc = self._master_fd = None
-        log.info(f"Orbbec bag saved -> {self.bag_path}")
+        log.info(f"Orbbec mcap saved -> {self.output_path}")
 
     def _read_until(self, keyword: str, timeout: int = 30) -> bool:
         buf      = b""

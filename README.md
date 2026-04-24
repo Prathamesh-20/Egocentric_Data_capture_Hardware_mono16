@@ -9,7 +9,7 @@ Sequential session pipeline for egocentric robotics data collection.
 ├── Initial FOV Check (5s, MJPEG stream to dashboard)
 │   └── YOLOv8n-pose primary → HSV skin fallback
 ├── Segment 1 (1 min)
-│   ├── Orbbec bag recording
+│   ├── Orbbec direct-MCAP recording (color + depth, protobuf)
 │   ├── Kreo 1 + 2 MP4 recording
 │   ├── Timestamps CSV
 │   └── → S3 upload queue
@@ -29,7 +29,7 @@ Sequential session pipeline for egocentric robotics data collection.
 | Wrist detection | HSV skin only | YOLOv8n-pose (primary) + HSV (fallback) |
 | Inter-segment checks | None | Single-frame wrist check between segments |
 | Upload | Manual / none | Auto S3 upload queue with retry |
-| MCAP conversion | Always on | Toggle from UI |
+| MCAP conversion | Always on | Direct MCAP recording (no .bag intermediate) |
 | Dashboard | Basic | Modern with timeline, upload stats, history |
 | Settings | Hardcoded | Configurable from UI |
 | Operator tracking | None | Operator ID + activity label per session |
@@ -48,8 +48,8 @@ pip install ultralytics --break-system-packages
 mkdir -p ~/models
 # Download yolov8n-pose.pt to ~/models/
 
-# MCAP support (optional — only needed if MCAP toggle is used)
-pip install rosbags mcap --break-system-packages
+# MCAP verification (optional — for verify_mcap.py and file inspection)
+pip install mcap foxglove-schemas-protobuf --break-system-packages
 ```
 
 ### AWS S3
@@ -78,7 +78,7 @@ Dashboard: `http://<pi-ip>:8080`
 
 ## Configuration
 
-Edit `capture/config.py` for hardware paths, or use the Settings gear icon in the dashboard for runtime parameters (segment/session duration, MCAP toggle).
+Edit `capture/config.py` for hardware paths, or use the Settings gear icon in the dashboard for runtime parameters (segment/session duration).
 
 ## File Structure
 
@@ -90,12 +90,12 @@ egocentric-data-capture-v2/
 │   ├── config.py                  # Central config
 │   ├── cameras/
 │   │   ├── fov_check.py           # YOLO + HSV wrist detection
-│   │   ├── orbbec.py              # Orbbec bag recorder (PTY)
+│   │   ├── orbbec.py              # Orbbec MCAP recorder (PTY)
 │   │   └── kreo.py                # Kreo USB camera recorder
 │   ├── pipeline/
 │   │   ├── session_v2.py          # Session orchestrator
 │   │   ├── uploader.py            # S3 upload queue with retry
-│   │   └── postprocess.py         # bag→MP4, bag→MCAP conversion
+│   │   └── postprocess.py         # DEPRECATED: legacy bag→MP4/MCAP converter
 │   └── ui/
 │       ├── server.py              # FastAPI backend
 │       └── index.html             # Dashboard
@@ -107,12 +107,11 @@ egocentric-data-capture-v2/
 /mnt/ssd/recordings/
 └── session_20260317_143000/
     ├── manifest_20260317_143000.json
-    ├── 20260317_143000_seg000_orbbec.bag
-    ├── 20260317_143000_seg000_orbbec.mcap  (if MCAP enabled)
+    ├── 20260317_143000_seg000_orbbec.mcap
     ├── 20260317_143000_seg000_kreo1.mp4
     ├── 20260317_143000_seg000_kreo2.mp4
     ├── 20260317_143000_seg000_timestamps.csv
-    ├── 20260317_143000_seg001_orbbec.bag
+    ├── 20260317_143000_seg001_orbbec.mcap
     └── ...
 ```
 # Egocentric_Data_capture_Hardware_mono16

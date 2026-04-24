@@ -205,7 +205,7 @@ def handle_stop(data: dict):
 def _upload_monitor():
     """
     Runs in a background thread — never stops.
-    Only processes .bag files from the current session (session_id filter).
+    Only processes .mcap files from the current session (session_id filter).
     Saves episode to DB as soon as segment is locally ready.
     Retries failed backend calls with their own task_id.
     """
@@ -263,7 +263,7 @@ def _upload_monitor():
                     "task_id":     task_id,
                     "operator_id": operator_id,
                     "s3_key":      None,
-                    "filename":    f"session_{session_id}_seg{seg_idx:03d}_failed.bag",
+                    "filename":    f"session_{session_id}_seg{seg_idx:03d}_failed.mcap",
                     "notes":       f"FAILED: {reason}",
                     "hostname":    HOSTNAME,
                     "is_success":  False,
@@ -278,7 +278,7 @@ def _upload_monitor():
                 status   = item.get("status", "")
                 s3_key   = item.get("s3_key", "") or ""
 
-                if not filename.endswith(".bag"):
+                if not filename.endswith(".mcap"):
                     continue
 
                 # Skip resumed files — these are from previous sessions

@@ -18,7 +18,10 @@ log = logging.getLogger(__name__)
 MIN_DISK_SPACE_GB    = 5
 MIN_DISK_SPACE_BYTES = MIN_DISK_SPACE_GB * 1024 * 1024 * 1024
 MAX_CONSECUTIVE_FAILURES = 3
-MIN_SEGMENT_SIZE_MB  = 800  # Minimum valid segment size — smaller = failed episode
+MIN_SEGMENT_SIZE_MB  = 600  # Minimum valid MCAP segment size — smaller = failed episode
+                            # Direct MCAP with zstd-compressed mono16 depth + MJPG color
+                            # at 1280x800@30fps for 60s typically produces 900MB-1.3GB.
+                            # Under 600MB almost certainly means frames were dropped.
 
 
 @dataclass
@@ -34,7 +37,7 @@ class SegmentInfo:
 class SessionV2:
     """
     30-minute session with sequential 1-min segments.
-    Orbbec Gemini 2L only — RGB + Depth .bag recording.
+    Orbbec Gemini 2L only — RGB + Depth direct MCAP recording.
     """
 
     def __init__(self,
@@ -177,10 +180,10 @@ class SessionV2:
             seg.end_time = time.time()
             seg.files    = files
 
-            bag_path = files.get("bag", "")
-            bag_ok   = self._validate_bag(bag_path, seg_idx, actual_duration)
+            mcap_path = files.get("mcap", "")
+            mcap_ok   = self._validate_mcap(mcap_path, seg_idx, actual_duration)
 
-            if not bag_ok:
+            if not mcap_ok:
                 seg.status = "failed"
                 self._notify_segment(seg)
                 consecutive_failures += 1
@@ -235,16 +238,16 @@ class SessionV2:
         if self.gpio:
             self.gpio.set_uploading()
 
-        # Clean up failed bag files locally
+        # Clean up failed mcap files locally
         for seg in self.segments:
             if seg.status == "failed":
-                bag_file = seg.files.get("bag", "")
-                if bag_file and os.path.exists(bag_file):
+                mcap_file = seg.files.get("mcap", "")
+                if mcap_file and os.path.exists(mcap_file):
                     try:
-                        os.remove(bag_file)
-                        log.info(f"Cleaned up failed bag: {bag_file}")
+                        os.remove(mcap_file)
+                        log.info(f"Cleaned up failed mcap: {mcap_file}")
                     except Exception as e:
-                        log.warning(f"Could not clean up {bag_file}: {e}")
+                        log.warning(f"Could not clean up {mcap_file}: {e}")
 
         free_gb = None
         try:
@@ -272,9 +275,9 @@ class SessionV2:
                     "status":     s.status,
                     "files":      s.files,
                     "wrist_ok":   s.wrist_ok,
-                    "bag_size_mb": round(
-                        os.path.getsize(s.files.get("bag", "")) / 1024 / 1024, 1)
-                        if s.files.get("bag") and os.path.exists(s.files.get("bag", ""))
+                    "mcap_size_mb": round(
+                        os.path.getsize(s.files.get("mcap", "")) / 1024 / 1024, 1)
+                        if s.files.get("mcap") and os.path.exists(s.files.get("mcap", ""))
                         else 0,
                 }
                 for s in self.segments
@@ -291,12 +294,12 @@ class SessionV2:
             self.on_complete(sid, n_complete, manifest)
 
     def _record_segment(self, session_id: str, seg_idx: int, duration: float) -> dict:
-        prefix  = f"{self.session_dir}/{session_id}_seg{seg_idx:03d}"
-        bag_out = f"{prefix}_orbbec.bag"
-        ts_csv  = f"{prefix}_timestamps.csv"
+        prefix   = f"{self.session_dir}/{session_id}_seg{seg_idx:03d}"
+        mcap_out = f"{prefix}_orbbec.mcap"
+        ts_csv   = f"{prefix}_timestamps.csv"
 
         stop_ev        = threading.Event()
-        orbbec         = OrbbecRecorder(bag_out, ORBBEC_REC, ORBBEC_LIB)
+        orbbec         = OrbbecRecorder(mcap_out, ORBBEC_REC, ORBBEC_LIB)
         orbbec_started = threading.Event()
         orbbec_ok      = [False]
         orbbec_crashed = [False]
@@ -318,11 +321,11 @@ class SessionV2:
         if not orbbec_started.wait(timeout=30):
             log.error("Orbbec did not start for segment")
             stop_ev.set()
-            return {"bag": bag_out}
+            return {"mcap": mcap_out}
 
         if not orbbec_ok[0]:
             log.error("Orbbec recorder failed for segment")
-            return {"bag": bag_out}
+            return {"mcap": mcap_out}
 
         t0_ns    = time.time_ns()
         end_time = time.time() + duration + 2
@@ -343,38 +346,38 @@ class SessionV2:
             if orbbec_crashed[0]:
                 w.writerow(["Orbbec", "CRASH_DETECTED", time.time_ns()])
 
-        log.info(f"Segment {seg_idx} recorded — {bag_out}")
-        return {"bag": bag_out, "timestamps": ts_csv}
+        log.info(f"Segment {seg_idx} recorded — {mcap_out}")
+        return {"mcap": mcap_out, "timestamps": ts_csv}
 
     def _notify_segment(self, seg: SegmentInfo):
         if self.on_segment_update:
             self.on_segment_update(seg.index, seg.status, seg.wrist_ok)
 
-    def _validate_bag(self, bag_path: str, seg_idx: int, duration: float) -> bool:
-        if not bag_path or not os.path.exists(bag_path):
-            log.error(f"Segment {seg_idx}: bag file does not exist: {bag_path}")
+    def _validate_mcap(self, mcap_path: str, seg_idx: int, duration: float) -> bool:
+        if not mcap_path or not os.path.exists(mcap_path):
+            log.error(f"Segment {seg_idx}: mcap file does not exist: {mcap_path}")
             return False
 
-        size_bytes = os.path.getsize(bag_path)
+        size_bytes = os.path.getsize(mcap_path)
         size_mb    = size_bytes / (1024 * 1024)
 
-        log.info(f"Segment {seg_idx} bag: {size_mb:.1f} MB (minimum required: {MIN_SEGMENT_SIZE_MB} MB)")
+        log.info(f"Segment {seg_idx} mcap: {size_mb:.1f} MB (minimum required: {MIN_SEGMENT_SIZE_MB} MB)")
 
-        # Empty bag — USB/camera issue
+        # Empty mcap — USB/camera issue
         if size_mb < 0.1:
-            log.error(f"BAG EMPTY — {size_bytes} bytes. USB power issue?")
-            self._state("bag_empty_warning",
-                        f"Segment {seg_idx + 1}: BAG EMPTY — USB power issue!")
+            log.error(f"MCAP EMPTY — {size_bytes} bytes. USB power issue?")
+            self._state("mcap_empty_warning",
+                        f"Segment {seg_idx + 1}: MCAP EMPTY — USB power issue!")
             return False
 
         # Too small — incomplete recording, do not count as episode
         if size_mb < MIN_SEGMENT_SIZE_MB:
-            log.error(f"BAG TOO SMALL — {size_mb:.1f} MB < {MIN_SEGMENT_SIZE_MB} MB — episode not saved")
-            self._state("bag_small_warning",
+            log.error(f"MCAP TOO SMALL — {size_mb:.1f} MB < {MIN_SEGMENT_SIZE_MB} MB — episode not saved")
+            self._state("mcap_small_warning",
                         f"Segment {seg_idx + 1}: only {size_mb:.1f} MB — episode not saved, please record again")
             return False
 
-        log.info(f"Segment {seg_idx} bag PASSED: {size_mb:.1f} MB")
+        log.info(f"Segment {seg_idx} mcap PASSED: {size_mb:.1f} MB")
         return True
 
     def _log_usb_power_diagnostics(self, seg_idx: int):

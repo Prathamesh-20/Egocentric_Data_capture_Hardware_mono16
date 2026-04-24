@@ -150,8 +150,8 @@ class UploadQueue:
 
             fname = os.path.basename(path)
 
-            # Only upload .bag and .csv files — skip everything else
-            if not (fname.endswith(".bag") or fname.endswith(".csv")):
+            # Only upload .mcap and .csv files — skip everything else
+            if not (fname.endswith(".mcap") or fname.endswith(".csv")):
                 continue
 
             if task_name and environment and operator_name:
