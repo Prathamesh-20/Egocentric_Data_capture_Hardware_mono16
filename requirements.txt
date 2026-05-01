@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────────
+# Egocentric Data Capture — Pi 5 runtime dependencies
+# Install on the Pi with:
+#   pip install -r requirements.txt --break-system-packages
+#
+# (the --break-system-packages flag is required on Pi OS Bookworm
+#  because the system Python is PEP 668 "externally managed")
+# ─────────────────────────────────────────────────────────────────
+
+# ── Web server / API ─────────────────────────────────────────────
+fastapi>=0.110
+uvicorn[standard]>=0.27
+requests>=2.31
+
+# ── Computer vision / FOV check ──────────────────────────────────
+opencv-python-headless>=4.8
+numpy>=1.24,<2.0
+# YOLOv8n-pose for wrist detection. Falls back to HSV skin detection
+# if ultralytics is missing OR if ~/models/yolov8n-pose.pt is not found.
+ultralytics>=8.1
+
+# ── AWS S3 upload ────────────────────────────────────────────────
+boto3>=1.34
+
+# ── Raspberry Pi 5 GPIO (NAYAA Hat Rev 2) ────────────────────────
+# lgpio is the only reliable GPIO lib for Pi 5. On non-Pi dev machines
+# this will fail to install silently — the code falls back to web-UI
+# only mode (GPIOController logs "lgpio not available" and continues).
+lgpio>=0.2.2.0; platform_machine == "aarch64"
+
+# ── Optional: Python-side MCAP/bag inspection (off by default) ────
+# NOT required for normal capture — MCAP files are written directly
+# by the C++ recorder (ob_device_record_mcap_nogui). Uncomment only
+# if you want to read/inspect MCAP files from Python on the Pi:
+# rosbags>=0.9.22
+# mcap>=1.1

@@ -1,0 +1,516 @@
+"""
+Session V2 — 30-min session orchestrator
+"""
+import os, csv, time, threading, logging, json, shutil
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Callable, Dict, List
+
+from capture.config import (
+    OUTPUT_DIR, ORBBEC_REC, ORBBEC_LIB,
+    FPS, SEGMENT_DURATION, SESSION_DURATION, SEGMENT_GAP,
+    FOV_CHECK_ENABLED, FOV_BETWEEN_SEGMENTS,
+    FOV_BETWEEN_SEGMENTS_SECS, FOV_BETWEEN_MIN_DETECT_FRAMES,
+    FOV_MAX_CONSEC_FAILURES, FOV_RETRY_WAIT_SECS,
+)
+from capture.cameras.orbbec import OrbbecRecorder
+from capture.cameras.fov_check import FOVChecker
+
+log = logging.getLogger(__name__)
+
+MIN_DISK_SPACE_GB    = 5
+MIN_DISK_SPACE_BYTES = MIN_DISK_SPACE_GB * 1024 * 1024 * 1024
+MAX_CONSECUTIVE_FAILURES = 3
+MIN_SEGMENT_SIZE_MB  = 600  # Minimum valid MCAP segment size — smaller = failed episode
+                            # Direct MCAP with zstd-compressed mono16 depth + MJPG color
+                            # at 1280x800@30fps for 60s typically produces 900MB-1.3GB.
+                            # Under 600MB almost certainly means frames were dropped.
+
+
+@dataclass
+class SegmentInfo:
+    index:      int
+    status:     str = "pending"
+    files:      Dict[str, str] = field(default_factory=dict)
+    wrist_ok:   Optional[bool] = None
+    start_time: Optional[float] = None
+    end_time:   Optional[float] = None
+
+
+class SessionV2:
+    """
+    30-minute session with sequential 1-min segments.
+    Orbbec Gemini 2L only — RGB + Depth direct MCAP recording.
+    """
+
+    def __init__(self,
+                 operator_id:       str = "",
+                 operator_name:     str = "",
+                 task_id:           str = "",
+                 task_name:         str = "",   # used for S3 folder structure
+                 environment:       str = "",   # used for S3 folder structure
+                 activity_label:    str = "",
+                 segment_duration:  int = SEGMENT_DURATION,
+                 session_duration:  int = SESSION_DURATION,
+                 mcap_enabled:      bool = False,
+                 on_state_change:   Callable = None,
+                 on_segment_update: Callable = None,
+                 on_frame_check:    Callable = None,
+                 on_complete:       Callable = None,
+                 upload_queue=None,
+                 gpio=None):
+
+        self.operator_id      = operator_id
+        self.operator_name    = operator_name
+        self.task_id          = task_id
+        self.task_name        = task_name       # used for S3 folder structure
+        self.environment      = environment     # used for S3 folder structure
+        self.activity_label   = activity_label
+        self.segment_duration = segment_duration
+        self.session_duration = session_duration
+        self.mcap_enabled     = mcap_enabled
+
+        self.on_state_change   = on_state_change
+        self.on_segment_update = on_segment_update
+        self.on_frame_check    = on_frame_check
+        self.on_complete       = on_complete
+        self.upload_queue      = upload_queue
+        self.gpio              = gpio
+
+        self._stop        = threading.Event()
+        self._thread      = None
+        self.session_id   = None
+        self.session_dir  = None
+        self.segments:    List[SegmentInfo] = []
+        self.max_segments = session_duration // segment_duration
+
+    def start(self):
+        self._stop.clear()
+        self.segments.clear()
+        self.session_id  = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.session_dir = os.path.join(OUTPUT_DIR, f"session_{self.session_id}")
+        os.makedirs(self.session_dir, exist_ok=True)
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop_early(self):
+        self._stop.set()
+
+    def is_running(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    def get_state(self) -> dict:
+        return {
+            "session_id":       self.session_id,
+            "operator_id":      self.operator_id,
+            "operator_name":    self.operator_name,
+            "task_id":          self.task_id,
+            "activity_label":   self.activity_label,
+            "segment_duration": self.segment_duration,
+            "session_duration": self.session_duration,
+            "mcap_enabled":     self.mcap_enabled,
+            "max_segments":     self.max_segments,
+            "segments": [
+                {"index": s.index, "status": s.status, "wrist_ok": s.wrist_ok}
+                for s in self.segments
+            ],
+        }
+
+    def _state(self, status: str, detail: str = "", **extra):
+        log.info(f"[session-v2] {status}: {detail}")
+        if self.on_state_change:
+            self.on_state_change(status, detail, **extra)
+
+    def _check_disk_space(self) -> bool:
+        try:
+            usage   = shutil.disk_usage(OUTPUT_DIR)
+            free_gb = usage.free / (1024 * 1024 * 1024)
+            if usage.free < MIN_DISK_SPACE_BYTES:
+                log.error(f"DISK SPACE LOW — only {free_gb:.1f} GB free. Stopping session!")
+                self._state("error", f"Disk space too low: {free_gb:.1f} GB free.")
+                if self.gpio:
+                    self.gpio.set_error()
+                return False
+            if free_gb < 10:
+                log.warning(f"Disk space getting low: {free_gb:.1f} GB free")
+            return True
+        except Exception as e:
+            log.warning(f"Could not check disk space: {e}")
+            return True
+
+    def _run_fov_check_with_retry(self, seg_idx: int) -> bool:
+        """
+        Run FOV check before a segment (including segment 0). Retries up to
+        FOV_MAX_CONSEC_FAILURES times. Returns True if wrists detected, False
+        if all retries failed (caller should abort session).
+
+        GPIO feedback:
+          - during check: LEDs off
+          - on pass: set_segment_gap (green solid) + 1x beep
+          - on fail (retryable): set_fov_failed (red + beep)
+          - on final fail: caller handles set_error
+        """
+        if not (FOV_CHECK_ENABLED and FOV_BETWEEN_SEGMENTS):
+            return True
+
+        label = "initial" if seg_idx == 0 else f"pre-segment-{seg_idx + 1}"
+
+        for attempt in range(1, FOV_MAX_CONSEC_FAILURES + 1):
+            if self._stop.is_set():
+                return False
+
+            if self.gpio:
+                self.gpio.set_fov_checking()
+
+            self._state(
+                "fov_between_segments" if seg_idx > 0 else "fov_checking",
+                f"FOV check {label} — attempt {attempt}/{FOV_MAX_CONSEC_FAILURES}",
+                segment_idx=seg_idx,
+                fov_attempt=attempt,
+                fov_max=FOV_MAX_CONSEC_FAILURES,
+            )
+
+            # Push annotated frames to UI via on_frame_check callback
+            def _frame_cb(frame, detected):
+                if self.on_frame_check:
+                    try:
+                        self.on_frame_check(frame, detected)
+                    except Exception as e:
+                        log.warning(f"frame_cb error: {e}")
+
+            checker = FOVChecker(
+                duration_sec=FOV_BETWEEN_SEGMENTS_SECS,
+                min_detection_frames=FOV_BETWEEN_MIN_DETECT_FRAMES,
+                frame_cb=_frame_cb,
+            )
+
+            try:
+                result = checker.run()
+            except Exception as e:
+                log.error(f"FOV checker crashed: {e}")
+                result = None
+
+            if result is not None and result.passed:
+                log.info(f"FOV check PASSED ({label}, attempt {attempt}): {result.message}")
+                self._state(
+                    "fov_passed",
+                    f"FOV OK — {result.frames_with_hands}/{result.frames_checked} frames",
+                    segment_idx=seg_idx,
+                )
+                if self.gpio:
+                    self.gpio.set_segment_gap()  # green solid
+                    self.gpio.beep_1x()
+                return True
+
+            # Failed this attempt
+            msg = result.message if result else "FOV check crashed"
+            log.warning(f"FOV check FAILED ({label}, attempt {attempt}/{FOV_MAX_CONSEC_FAILURES}): {msg}")
+
+            if attempt < FOV_MAX_CONSEC_FAILURES:
+                if self.gpio:
+                    self.gpio.set_fov_failed()  # red + single beep
+                self._state(
+                    "fov_failed",
+                    f"No hands in frame — retry {attempt}/{FOV_MAX_CONSEC_FAILURES}. Adjust position.",
+                    segment_idx=seg_idx,
+                    fov_attempt=attempt,
+                    fov_max=FOV_MAX_CONSEC_FAILURES,
+                )
+                # Short wait so operator can reposition
+                self._stop.wait(timeout=FOV_RETRY_WAIT_SECS)
+
+        # All retries exhausted
+        log.error(f"FOV check failed {FOV_MAX_CONSEC_FAILURES}x in a row ({label}) — aborting session")
+        return False
+
+    def _run(self):
+        sid              = self.session_id
+        session_start    = time.time()
+        session_deadline = session_start + self.session_duration
+
+        self._state("session_active",
+                    f"Session {sid} started — {self.max_segments} segments planned")
+
+        seg_idx              = 0
+        consecutive_failures = 0
+
+        while (not self._stop.is_set()
+               and time.time() < session_deadline
+               and seg_idx < self.max_segments):
+
+            seg          = SegmentInfo(index=seg_idx)
+            seg.wrist_ok = True
+            self.segments.append(seg)
+
+            if not self._check_disk_space():
+                self.segments.pop()
+                break
+
+            remaining = session_deadline - time.time()
+            if remaining < 10:
+                log.info("Less than 10s remaining, ending session")
+                self.segments.pop()
+                break
+            actual_duration = min(self.segment_duration, remaining)
+
+            # ── FOV check before every segment (with retry) ──────
+            fov_ok = self._run_fov_check_with_retry(seg_idx)
+            if not fov_ok:
+                # All retries failed — abort session
+                self._state(
+                    "error",
+                    f"Session auto-stopped — no hands detected in frame "
+                    f"after {FOV_MAX_CONSEC_FAILURES} attempts. "
+                    f"Adjust camera position and restart.",
+                    segment_idx=seg_idx,
+                )
+                if self.gpio:
+                    self.gpio.set_error()
+                self.segments.pop()
+                break
+            if self._stop.is_set():
+                self.segments.pop()
+                break
+
+            if self.gpio:
+                self.gpio.beep_1x()
+                self.gpio.set_recording()
+
+            seg.status     = "recording"
+            seg.start_time = time.time()
+            self._notify_segment(seg)
+            self._state("recording",
+                        f"Segment {seg_idx + 1}/{self.max_segments} — {int(actual_duration)}s",
+                        segment_idx=seg_idx)
+
+            files        = self._record_segment(sid, seg_idx, actual_duration)
+            seg.end_time = time.time()
+            seg.files    = files
+
+            mcap_path = files.get("mcap", "")
+            mcap_ok   = self._validate_mcap(mcap_path, seg_idx, actual_duration)
+
+            if not mcap_ok:
+                seg.status = "failed"
+                self._notify_segment(seg)
+                consecutive_failures += 1
+                self._log_usb_power_diagnostics(seg_idx)
+                log.error(f"Segment {seg_idx} FAILED — consecutive: "
+                          f"{consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}")
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    log.error("Too many consecutive failures — auto-stopping session.")
+                    self._state("error",
+                                f"Session auto-stopped — {MAX_CONSECUTIVE_FAILURES} "
+                                f"consecutive failures. Check camera connection.")
+                    if self.gpio:
+                        self.gpio.set_error()
+                    break
+                time.sleep(5)
+                seg_idx += 1
+                continue
+
+            consecutive_failures = 0
+
+            if self.gpio:
+                self.gpio.set_segment_gap()
+                self.gpio.beep_2x()
+
+            seg.status = "uploading"
+            self._notify_segment(seg)
+
+            if self.upload_queue:
+                self.upload_queue.enqueue_segment_files(
+                    sid, seg_idx, files,
+                    operator_name=self.operator_name,
+                    task_id=self.task_id,
+                    task_name=self.task_name,      # pass for S3 folder structure
+                    environment=self.environment,  # pass for S3 folder structure
+                )
+
+            seg.status = "complete"
+            self._notify_segment(seg)
+            seg_idx += 1
+
+            if (not self._stop.is_set()
+                    and time.time() < session_deadline
+                    and seg_idx < self.max_segments):
+                log.info(f"Waiting {SEGMENT_GAP}s before next segment...")
+                self._stop.wait(timeout=SEGMENT_GAP)
+
+        # ── Session complete ──────────────────────────────────────
+        elapsed    = time.time() - session_start
+        n_complete = sum(1 for s in self.segments if s.status == "complete")
+        n_failed   = sum(1 for s in self.segments if s.status == "failed")
+
+        if self.gpio:
+            self.gpio.set_uploading()
+
+        # Clean up failed mcap files locally
+        for seg in self.segments:
+            if seg.status == "failed":
+                mcap_file = seg.files.get("mcap", "")
+                if mcap_file and os.path.exists(mcap_file):
+                    try:
+                        os.remove(mcap_file)
+                        log.info(f"Cleaned up failed mcap: {mcap_file}")
+                    except Exception as e:
+                        log.warning(f"Could not clean up {mcap_file}: {e}")
+
+        free_gb = None
+        try:
+            usage   = shutil.disk_usage(OUTPUT_DIR)
+            free_gb = round(usage.free / (1024 * 1024 * 1024), 1)
+            log.info(f"Disk space remaining: {free_gb} GB")
+        except Exception:
+            pass
+
+        manifest = {
+            "session_id":        sid,
+            "operator_id":       self.operator_id,
+            "operator_name":     self.operator_name,
+            "task_id":           self.task_id,
+            "activity_label":    self.activity_label,
+            "segments_complete": n_complete,
+            "segments_failed":   n_failed,
+            "segments_planned":  self.max_segments,
+            "duration_actual":   round(elapsed, 1),
+            "mcap_enabled":      self.mcap_enabled,
+            "disk_free_gb":      free_gb,
+            "segments": [
+                {
+                    "index":      s.index,
+                    "status":     s.status,
+                    "files":      s.files,
+                    "wrist_ok":   s.wrist_ok,
+                    "mcap_size_mb": round(
+                        os.path.getsize(s.files.get("mcap", "")) / 1024 / 1024, 1)
+                        if s.files.get("mcap") and os.path.exists(s.files.get("mcap", ""))
+                        else 0,
+                }
+                for s in self.segments
+            ],
+        }
+        manifest_path = os.path.join(self.session_dir, f"manifest_{sid}.json")
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+
+        self._state("complete",
+                    f"Session {sid} complete — {n_complete} segments "
+                    f"({n_failed} failed) in {elapsed:.0f}s")
+        if self.on_complete:
+            self.on_complete(sid, n_complete, manifest)
+
+    def _record_segment(self, session_id: str, seg_idx: int, duration: float) -> dict:
+        prefix   = f"{self.session_dir}/{session_id}_seg{seg_idx:03d}"
+        mcap_out = f"{prefix}_orbbec.mcap"
+        ts_csv   = f"{prefix}_timestamps.csv"
+
+        stop_ev        = threading.Event()
+        orbbec         = OrbbecRecorder(mcap_out, ORBBEC_REC, ORBBEC_LIB)
+        orbbec_started = threading.Event()
+        orbbec_ok      = [False]
+        orbbec_crashed = [False]
+
+        def orbbec_thread():
+            ok = orbbec.start()
+            orbbec_ok[0] = ok
+            if ok:
+                orbbec_started.set()
+                stop_ev.wait(timeout=duration)
+                stop_ev.set()
+                orbbec.stop()
+            else:
+                orbbec_started.set()
+                stop_ev.set()
+
+        threading.Thread(target=orbbec_thread, daemon=True).start()
+
+        if not orbbec_started.wait(timeout=30):
+            log.error("Orbbec did not start for segment")
+            stop_ev.set()
+            return {"mcap": mcap_out}
+
+        if not orbbec_ok[0]:
+            log.error("Orbbec recorder failed for segment")
+            return {"mcap": mcap_out}
+
+        t0_ns    = time.time_ns()
+        end_time = time.time() + duration + 2
+        while not stop_ev.is_set() and not self._stop.is_set() and time.time() < end_time:
+            if orbbec._proc and orbbec._proc.poll() is not None:
+                log.error(f"Orbbec process crashed! Exit code: {orbbec._proc.returncode}")
+                orbbec_crashed[0] = True
+                stop_ev.set()
+                break
+            time.sleep(0.5)
+        stop_ev.set()
+
+        with open(ts_csv, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["camera", "event", "unix_ns"])
+            w.writerow(["Orbbec", "segment_start", t0_ns])
+            w.writerow(["Orbbec", "segment_end", time.time_ns()])
+            if orbbec_crashed[0]:
+                w.writerow(["Orbbec", "CRASH_DETECTED", time.time_ns()])
+
+        log.info(f"Segment {seg_idx} recorded — {mcap_out}")
+        return {"mcap": mcap_out, "timestamps": ts_csv}
+
+    def _notify_segment(self, seg: SegmentInfo):
+        if self.on_segment_update:
+            self.on_segment_update(seg.index, seg.status, seg.wrist_ok)
+
+    def _validate_mcap(self, mcap_path: str, seg_idx: int, duration: float) -> bool:
+        if not mcap_path or not os.path.exists(mcap_path):
+            log.error(f"Segment {seg_idx}: mcap file does not exist: {mcap_path}")
+            return False
+
+        size_bytes = os.path.getsize(mcap_path)
+        size_mb    = size_bytes / (1024 * 1024)
+
+        log.info(f"Segment {seg_idx} mcap: {size_mb:.1f} MB (minimum required: {MIN_SEGMENT_SIZE_MB} MB)")
+
+        # Empty mcap — USB/camera issue
+        if size_mb < 0.1:
+            log.error(f"MCAP EMPTY — {size_bytes} bytes. USB power issue?")
+            self._state("mcap_empty_warning",
+                        f"Segment {seg_idx + 1}: MCAP EMPTY — USB power issue!")
+            return False
+
+        # Too small — incomplete recording, do not count as episode
+        if size_mb < MIN_SEGMENT_SIZE_MB:
+            log.error(f"MCAP TOO SMALL — {size_mb:.1f} MB < {MIN_SEGMENT_SIZE_MB} MB — episode not saved")
+            self._state("mcap_small_warning",
+                        f"Segment {seg_idx + 1}: only {size_mb:.1f} MB — episode not saved, please record again")
+            return False
+
+        log.info(f"Segment {seg_idx} mcap PASSED: {size_mb:.1f} MB")
+        return True
+
+    def _log_usb_power_diagnostics(self, seg_idx: int):
+        import subprocess
+        log.info(f"=== USB/POWER DIAGNOSTICS for segment {seg_idx} ===")
+        try:
+            result = subprocess.run(["dmesg"], capture_output=True, text=True, timeout=5)
+            usb_lines = [l for l in result.stdout.split("\n") if "usb" in l.lower()]
+            for line in usb_lines[-10:]:
+                log.warning(f"  dmesg: {line.strip()}")
+        except Exception as e:
+            log.warning(f"  Could not read dmesg: {e}")
+        try:
+            result = subprocess.run(
+                ["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=5)
+            log.info(f"  Throttle: {result.stdout.strip()}")
+        except Exception as e:
+            log.warning(f"  Could not check throttle: {e}")
+        try:
+            result = subprocess.run(["lsusb"], capture_output=True, text=True, timeout=5)
+            orbbec = [l for l in result.stdout.split("\n") if "2bc5" in l.lower()]
+            if orbbec:
+                log.info(f"  Orbbec: {orbbec[0].strip()}")
+            else:
+                log.error("  Orbbec NOT FOUND in lsusb!")
+        except Exception as e:
+            log.warning(f"  Could not run lsusb: {e}")
+        log.info("=== END DIAGNOSTICS ===")

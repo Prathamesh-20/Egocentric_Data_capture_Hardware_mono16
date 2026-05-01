@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.bag
+*.mcap
+*.mp4
+recordings/

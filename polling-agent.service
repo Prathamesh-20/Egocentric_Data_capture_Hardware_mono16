@@ -1,0 +1,20 @@
+[Unit]
+Description=App Backend Polling Agent for %i
+After=network-online.target capture-daemon.service
+Wants=network-online.target
+Requires=capture-daemon.service
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i/Egocentric_Data_capture_Hardware_mono16
+Environment="PYTHONPATH=/home/%i/Egocentric_Data_capture_Hardware_mono16"
+EnvironmentFile=/home/%i/Egocentric_Data_capture_Hardware_mono16/.env.polling
+ExecStart=/usr/bin/python3 /home/%i/Egocentric_Data_capture_Hardware_mono16/polling_agent.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

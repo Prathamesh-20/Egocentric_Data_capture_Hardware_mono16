@@ -1,0 +1,22 @@
+[Unit]
+Description=Egocentric Data Capture V2 Daemon for %i
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+Group=video
+WorkingDirectory=/home/%i/Egocentric_Data_capture_Hardware_mono16
+Environment="PYTHONPATH=/home/%i/Egocentric_Data_capture_Hardware_mono16"
+Environment="LD_LIBRARY_PATH=/opt/OrbbecSDK/lib"
+Environment="QT_QPA_PLATFORM=offscreen"
+ExecStart=/usr/bin/python3 /home/%i/Egocentric_Data_capture_Hardware_mono16/capture_daemon.py
+Restart=on-failure
+RestartSec=5
+SupplementaryGroups=plugdev
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
