@@ -1,0 +1,30 @@
+# Copyright (c) Autonex Tools.
+# Licensed under the MIT License.
+#
+# Build target: orbbec_stream
+# Used by FOVChecker (capture/cameras/fov_check.py) for the per-segment
+# wrist-in-frame check. Writes color frames as MJPG to stdout in the
+# protocol expected by the Python script.
+#
+# This CMakeLists is dropped into:
+#   <SDK>/examples/src/orbbec_stream/
+# and registered via add_subdirectory(orbbec_stream) in the parent
+# examples/CMakeLists.txt — done by install.sh.
+
+cmake_minimum_required(VERSION 3.10)
+project(orbbec_stream)
+
+add_executable(${PROJECT_NAME} orbbec_stream.cpp)
+set_property(TARGET ${PROJECT_NAME} PROPERTY CXX_STANDARD 11)
+
+# Link against the SDK and the examples utils helper (same pattern as
+# every stock 1.stream.* example). OB_SDK_LIB_NAME is set by the parent
+# examples/CMakeLists.txt; ob::examples::utils gives us utils.hpp.
+target_link_libraries(${PROJECT_NAME}
+    ob::${OB_SDK_LIB_NAME}
+    ob::examples::utils
+)
+
+set_target_properties(${PROJECT_NAME} PROPERTIES FOLDER "examples")
+
+install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
