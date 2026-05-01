@@ -1,0 +1,2 @@
+*.sh text eol=lf
+install_kit_v1/install.sh text eol=lf
