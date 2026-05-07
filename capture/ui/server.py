@@ -13,7 +13,7 @@ import uvicorn
 from capture.config import (
     UI_HOST, UI_PORT, FOV_CHECK_SECS, FOV_MIN_DETECTION_FRAMES,
     SEGMENT_DURATION, SESSION_DURATION, MCAP_ENABLED_DEFAULT, OUTPUT_DIR,
-    FOV_CHECK_ENABLED,
+    FOV_CHECK_ENABLED, ORBBEC_STREAM, ORBBEC_STREAM_LIB,
 )
 from capture.pipeline.session_v2 import SessionV2
 from capture.pipeline.uploader import UploadQueue
@@ -323,6 +323,70 @@ def get_status():
 @app.post("/gpio/start")
 def gpio_start():
     return start_session()
+
+
+# ── MJPEG camera stream ───────────────────────────────────────────
+@app.get("/stream")
+async def stream_camera():
+    """
+    Live MJPEG stream from the Orbbec camera.
+    Returns 503 while a recording session is active (camera is locked).
+    """
+    if state["status"] in ("recording", "session_active"):
+        return JSONResponse({"error": "Camera busy — recording in progress"}, 503)
+
+    if not ORBBEC_STREAM or not os.path.exists(ORBBEC_STREAM):
+        return JSONResponse({"error": "Stream binary not found"}, 503)
+
+    async def _gen():
+        env = dict(os.environ)
+        env["LD_LIBRARY_PATH"] = ORBBEC_STREAM_LIB
+        env["QT_QPA_PLATFORM"] = "offscreen"
+        proc = await asyncio.create_subprocess_exec(
+            ORBBEC_STREAM,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+            env=env,
+        )
+        try:
+            buf = b""
+            while True:
+                chunk = await proc.stdout.read(65536)
+                if not chunk:
+                    break
+                buf += chunk
+                # Extract complete JPEG frames by SOI/EOI markers
+                while True:
+                    start = buf.find(b"\xff\xd8")
+                    if start == -1:
+                        buf = b""
+                        break
+                    end = buf.find(b"\xff\xd9", start + 2)
+                    if end == -1:
+                        buf = buf[start:]
+                        break
+                    end += 2
+                    frame = buf[start:end]
+                    buf   = buf[end:]
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n"
+                        + frame
+                        + b"\r\n"
+                    )
+        finally:
+            try:
+                proc.terminate()
+                await asyncio.wait_for(proc.wait(), timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    return StreamingResponse(
+        _gen(), media_type="multipart/x-mixed-replace; boundary=frame"
+    )
 
 
 # ── Serve UI ──────────────────────────────────────────────────────
