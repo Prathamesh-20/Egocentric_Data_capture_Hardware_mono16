@@ -176,11 +176,10 @@ def handle_start(data: dict):
             _session_active     = True
             _current_session_id = result.get("session_id", "")
         log.info(f"Session started: {result.get('session_id', 'unknown')}")
+        if command_id:
+            backend_post(f"/api/v1/pi-commands/complete/{command_id}")
     else:
-        log.error(f"Session start failed: {result}")
-
-    if command_id:
-        backend_post(f"/api/v1/pi-commands/complete/{command_id}")
+        log.error(f"Session start failed — command not marked complete, will retry on next poll")
 
 
 # ── Handle stop command ────────────────────────────────────────────
