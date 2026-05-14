@@ -254,23 +254,49 @@ section "Build Orbbec custom binaries (calls install_kit_v2)"
 #   - optional smoke test (~10s recording)
 #
 # We control the smoke test via SKIP_SMOKE env var. Default: smoke ON.
+#
+# IMPORTANT — fleet-state tolerance:
+# Many of the 30 Pis in the fleet were prepped by an earlier version of
+# the install kit before this setup.sh existed. On those Pis, the kit's
+# parent-CMakeLists patching step fails on re-run (it replaced its
+# anchor line during the first run, so the re-run can't find it).
+# We sidestep this by checking up front: if BOTH custom binaries are
+# already present AND the udev rules are installed, the kit has nothing
+# meaningful to do, so we skip it entirely. A fresh Pi (binaries missing)
+# falls through to running the kit normally.
+#
+# Override: set FORCE_KIT=1 to run the kit even when binaries exist (e.g.
+# to rebuild after a code change to the .cpp files).
+
+REC_BIN="$SDK_INSTALL_DIR/bin/ob_device_record_mcap_nogui"
+STREAM_BIN="$SDK_INSTALL_DIR/bin/ob_color_jpeg_stream"
+UDEV_RULES="/etc/udev/rules.d/99-obsensor-libusb.rules"
 
 KIT_INSTALL="$V2_DELIVERY_INSTALL_DIR/install_kit_v2/install.sh"
 [ -x "$KIT_INSTALL" ] || chmod +x "$KIT_INSTALL"
 
-# Export SDK path so the kit picks up the right SDK location.
-export SDK_ROOT="$SDK_INSTALL_DIR"
-
-if [ "${SKIP_SMOKE:-0}" = "1" ]; then
-    log "running install_kit_v2 with SKIP_SMOKE=1 (camera test disabled)"
-    SKIP_SMOKE=1 bash "$KIT_INSTALL" || die "install_kit_v2 failed (see output above and $LOG)"
+if [ "${FORCE_KIT:-0}" != "1" ] \
+   && [ -x "$REC_BIN" ] && [ -x "$STREAM_BIN" ] && [ -f "$UDEV_RULES" ]; then
+    skip "kit binaries already built and udev rules already installed"
+    log "      $REC_BIN ($(stat -c%s "$REC_BIN") bytes)"
+    log "      $STREAM_BIN ($(stat -c%s "$STREAM_BIN") bytes)"
+    log "      (set FORCE_KIT=1 to rebuild even when binaries exist)"
+    ok "kit step skipped — fleet-state Pi"
 else
-    log "running install_kit_v2 with camera smoke test enabled"
-    log "  if this hangs, the Orbbec camera may not be plugged in."
-    log "  Ctrl+C and re-run with SKIP_SMOKE=1 to skip the camera test."
-    bash "$KIT_INSTALL" || die "install_kit_v2 failed (see output above and $LOG)"
+    # Export SDK path so the kit picks up the right SDK location.
+    export SDK_ROOT="$SDK_INSTALL_DIR"
+
+    if [ "${SKIP_SMOKE:-0}" = "1" ]; then
+        log "running install_kit_v2 with SKIP_SMOKE=1 (camera test disabled)"
+        SKIP_SMOKE=1 bash "$KIT_INSTALL" || die "install_kit_v2 failed (see output above and $LOG)"
+    else
+        log "running install_kit_v2 with camera smoke test enabled"
+        log "  if this hangs, the Orbbec camera may not be plugged in."
+        log "  Ctrl+C and re-run with SKIP_SMOKE=1 to skip the camera test."
+        bash "$KIT_INSTALL" || die "install_kit_v2 failed (see output above and $LOG)"
+    fi
+    ok "Orbbec SDK custom binaries built and installed"
 fi
-ok "Orbbec SDK custom binaries built and installed"
 
 # ────────────────────────────────────────────────────────────────────────
 # Step 7 — Add user to video + plugdev groups
