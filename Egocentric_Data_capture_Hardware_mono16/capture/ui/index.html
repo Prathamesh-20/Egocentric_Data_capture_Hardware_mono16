@@ -1,0 +1,1157 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Egocentric Capture V2</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+
+/* ═══════════ THEME TOKENS ═══════════ */
+:root[data-theme="dark"] {
+  --bg-app:        #0f1117;
+  --bg-surface:    #181c27;
+  --bg-card:       #1e2235;
+  --bg-input:      #13161f;
+  --bg-elevated:   #252a3d;
+  --border:        #2a2f45;
+  --border-focus:  #4a6fa5;
+  --text-primary:  #eef0f6;
+  --text-secondary:#8b92ab;
+  --text-muted:    #4e5570;
+  --accent:        #4a90d9;
+  --accent-hover:  #5a9fe8;
+  --green:         #3dba7e;
+  --red:           #e05555;
+  --orange:        #e8a030;
+  --purple:        #8b72cc;
+  --glow-accent:   rgba(74,144,217,0.12);
+  --glow-green:    rgba(61,186,126,0.12);
+  --glow-red:      rgba(224,85,85,0.12);
+  --glow-orange:   rgba(232,160,48,0.12);
+  --shadow-card:   0 2px 16px rgba(0,0,0,0.35);
+  --shadow-modal:  0 24px 64px rgba(0,0,0,0.55);
+  --theme-icon:    '☀';
+}
+
+:root[data-theme="light"] {
+  --bg-app:        #f0f2f7;
+  --bg-surface:    #ffffff;
+  --bg-card:       #ffffff;
+  --bg-input:      #f5f7fc;
+  --bg-elevated:   #eef0f7;
+  --border:        #dde0ec;
+  --border-focus:  #4a90d9;
+  --text-primary:  #1a1d2e;
+  --text-secondary:#5a5f7a;
+  --text-muted:    #9499b4;
+  --accent:        #3a7fd4;
+  --accent-hover:  #2d6fc4;
+  --green:         #2da068;
+  --red:           #d04444;
+  --orange:        #cc8c20;
+  --purple:        #7058bc;
+  --glow-accent:   rgba(58,127,212,0.1);
+  --glow-green:    rgba(45,160,104,0.1);
+  --glow-red:      rgba(208,68,68,0.1);
+  --glow-orange:   rgba(204,140,32,0.1);
+  --shadow-card:   0 2px 12px rgba(0,0,0,0.07);
+  --shadow-modal:  0 24px 64px rgba(0,0,0,0.18);
+  --theme-icon:    '🌙';
+}
+
+/* ═══════════ RESET & BASE ═══════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: 'Inter', -apple-system, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+/* ═══════════ HEADER ═══════════ */
+header {
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 28px;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: var(--shadow-card);
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.logo-mark {
+  width: 34px;
+  height: 34px;
+  background: var(--accent);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: -0.5px;
+  flex-shrink: 0;
+}
+.logo-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.2px;
+}
+.logo-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Status pill */
+.status-pill {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 20px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+  transition: all 0.25s ease;
+}
+.pill-idle       { background: var(--bg-elevated); color: var(--text-muted); border-color: var(--border); }
+.pill-passed     { background: var(--glow-green);  color: var(--green);  border-color: var(--green); }
+.pill-recording  { background: var(--glow-orange); color: var(--orange); border-color: var(--orange); animation: pulse 2s infinite; }
+.pill-session_active { background: var(--glow-orange); color: var(--orange); border-color: var(--orange); }
+.pill-complete   { background: var(--glow-green);  color: var(--green);  border-color: var(--green); }
+.pill-error      { background: var(--glow-red);    color: var(--red);    border-color: var(--red); }
+.pill-fov        { background: var(--glow-accent); color: var(--accent); border-color: var(--accent); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.65; }
+}
+
+/* Icon buttons */
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 15px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.icon-btn:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+}
+
+/* ═══════════ LAYOUT ═══════════ */
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  grid-template-rows: auto 1fr;
+  gap: 20px;
+  padding: 20px 28px 28px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* ═══════════ CARDS ═══════════ */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+  transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+.card-head {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.card-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+.card-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.card-body { padding: 18px; }
+
+/* ═══════════ INPUTS ROW ═══════════ */
+.inputs-row {
+  grid-column: 1 / -1;
+}
+.inputs-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.field input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 13px;
+  color: var(--text-primary);
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  outline: none;
+  transition: all 0.2s ease;
+}
+.field input:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--glow-accent);
+}
+.field input::placeholder { color: var(--text-muted); }
+.field input.err {
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px var(--glow-red);
+}
+.field input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.actions-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* ═══════════ BUTTONS ═══════════ */
+.btn {
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 22px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  letter-spacing: 0.3px;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); box-shadow: 0 4px 14px var(--glow-accent); }
+
+.btn-success { background: var(--green); color: #fff; }
+.btn-success:hover:not(:disabled) { box-shadow: 0 4px 14px var(--glow-green); filter: brightness(1.08); }
+
+.btn-danger { background: var(--red); color: #fff; }
+.btn-danger:hover:not(:disabled) { box-shadow: 0 4px 14px var(--glow-red); filter: brightness(1.08); }
+
+.btn-ghost {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover:not(:disabled) { background: var(--bg-card); color: var(--text-primary); }
+
+/* ═══════════ MAIN CONTENT ═══════════ */
+.main-content {
+  grid-column: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Status banner */
+.status-banner {
+  padding: 12px 16px;
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  border-left: 3px solid var(--border);
+  font-size: 13px;
+  color: var(--text-secondary);
+  transition: all 0.25s ease;
+  min-height: 20px;
+}
+.banner-ok     { border-left-color: var(--green);  color: var(--green); background: var(--glow-green); }
+.banner-warn   { border-left-color: var(--orange); color: var(--orange); background: var(--glow-orange); }
+.banner-error  { border-left-color: var(--red);    color: var(--red);   background: var(--glow-red); }
+.banner-info   { border-left-color: var(--accent); color: var(--accent); background: var(--glow-accent); }
+
+/* Timer */
+.timer-wrap { text-align: center; padding: 12px 0; display: none; }
+.timer-wrap.show { display: block; }
+.timer-digits {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 64px;
+  font-weight: 600;
+  color: var(--orange);
+  letter-spacing: 4px;
+  line-height: 1;
+}
+.timer-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.5px;
+}
+
+/* Session info strip */
+.session-strip {
+  display: none;
+  padding: 10px 16px;
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', monospace;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.session-strip.show { display: flex; }
+.strip-item { color: var(--text-muted); }
+.strip-item span { color: var(--text-primary); margin-left: 4px; }
+.strip-sep { color: var(--border); }
+
+/* ═══════════ SIDEBAR ═══════════ */
+.sidebar {
+  grid-column: 2;
+  grid-row: 2 / 4;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ═══════════ SEGMENT TIMELINE ═══════════ */
+.seg-list {
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.seg-list::-webkit-scrollbar { width: 4px; }
+.seg-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.seg-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+  transition: background 0.15s;
+}
+.seg-item.active { background: var(--bg-elevated); }
+
+.seg-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.seg-dot.pending   { background: var(--border); }
+.seg-dot.recording { background: var(--orange); animation: dot-blink 1s infinite; }
+.seg-dot.uploading { background: var(--accent); }
+.seg-dot.complete  { background: var(--green); }
+.seg-dot.failed    { background: var(--red); }
+@keyframes dot-blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+.seg-num    { font-family: 'JetBrains Mono', monospace; color: var(--text-secondary); flex: 1; }
+.seg-status { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
+
+/* ═══════════ UPLOAD QUEUE ═══════════ */
+.upload-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.upload-stat {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-align: center;
+}
+.upload-stat-n {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1;
+}
+.upload-stat-l {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+}
+.n-queue  .upload-stat-n { color: var(--text-secondary); }
+.n-up     .upload-stat-n { color: var(--accent); }
+.n-done   .upload-stat-n { color: var(--green); }
+.n-fail   .upload-stat-n { color: var(--red); }
+
+.file-list { max-height: 160px; overflow-y: auto; }
+.file-list::-webkit-scrollbar { width: 3px; }
+.file-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.file-row { padding: 7px 0; border-bottom: 1px solid var(--border); }
+.file-row:last-child { border-bottom: none; }
+.file-top  { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.file-name { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 170px; }
+.file-pct  { font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; }
+.file-pct.uploading { color: var(--accent); }
+.file-pct.complete  { color: var(--green); }
+.file-pct.failed    { color: var(--red); }
+.file-pct.retrying  { color: var(--orange); }
+.prog-track { height: 3px; background: var(--bg-elevated); border-radius: 2px; overflow: hidden; }
+.prog-bar   { height: 100%; border-radius: 2px; transition: width 0.4s ease; background: var(--accent); }
+.prog-bar.complete { background: var(--green); }
+.prog-bar.failed   { background: var(--red); }
+.file-size { font-size: 10px; color: var(--text-muted); margin-top: 3px; font-family: 'JetBrains Mono', monospace; }
+
+/* ═══════════ HISTORY ═══════════ */
+.history-list { max-height: 180px; overflow-y: auto; }
+.history-list::-webkit-scrollbar { width: 3px; }
+.history-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+.history-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.history-row:last-child { border-bottom: none; }
+.history-id   { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 500; color: var(--text-primary); }
+.history-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.history-segs { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; color: var(--green); white-space: nowrap; }
+
+/* ═══════════ SETTINGS MODAL ═══════════ */
+.overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.45);
+  backdrop-filter: blur(6px);
+  z-index: 200;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+.overlay.open { display: flex; }
+
+.modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  width: 440px;
+  max-width: 92vw;
+  box-shadow: var(--shadow-modal);
+}
+.modal-head {
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.modal-close {
+  width: 28px; height: 28px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+  display: flex; align-items: center; justify-content: center;
+}
+.modal-close:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.modal-body   { padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; }
+.modal-footer { padding: 14px 22px 20px; display: flex; justify-content: flex-end; gap: 10px; }
+
+/* Toggle */
+.toggle-row   { display: flex; align-items: center; justify-content: space-between; }
+.toggle-label { font-size: 13px; color: var(--text-secondary); }
+.toggle {
+  position: relative; width: 40px; height: 22px;
+  background: var(--border); border-radius: 11px;
+  cursor: pointer; border: none; transition: background 0.2s;
+}
+.toggle::after {
+  content: ''; position: absolute;
+  top: 3px; left: 3px;
+  width: 16px; height: 16px;
+  background: #fff; border-radius: 50%;
+  transition: left 0.2s;
+}
+.toggle.on { background: var(--accent); }
+.toggle.on::after { left: 21px; }
+
+/* ═══════════ ALERT POPUP ═══════════ */
+.alert-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  width: 360px;
+  max-width: 92vw;
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+}
+.alert-head {
+  padding: 16px 20px;
+  background: var(--glow-red);
+  border-bottom: 1px solid var(--red);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.alert-icon  { font-size: 18px; }
+.alert-title { font-size: 13px; font-weight: 600; color: var(--red); }
+.alert-body  { padding: 18px 20px; font-size: 14px; color: var(--text-secondary); line-height: 1.6; }
+.alert-foot  { padding: 0 20px 18px; display: flex; justify-content: flex-end; }
+
+/* ═══════════ EMPTY STATES ═══════════ */
+.empty {
+  text-align: center;
+  padding: 20px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* ═══════════ DIVIDER ═══════════ */
+.divider { height: 1px; background: var(--border); margin: 2px 0; }
+
+/* ═══════════ RESPONSIVE ═══════════ */
+@media (max-width: 860px) {
+  .layout { grid-template-columns: 1fr; }
+  .sidebar { grid-column: 1; grid-row: auto; }
+  .inputs-grid { grid-template-columns: 1fr 1fr; }
+  .actions-row { flex-wrap: wrap; }
+}
+
+</style>
+</head>
+<body>
+
+<!-- ═══ HEADER ═══ -->
+<header>
+  <div class="logo">
+    <div class="logo-mark">EC</div>
+    <div>
+      <div class="logo-name">Egocentric Capture</div>
+      <div class="logo-sub">v2.0 · Orbbec Gemini 2L</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div id="status-pill" class="status-pill pill-idle">Idle</div>
+    <button class="icon-btn" id="theme-btn" onclick="toggleTheme()" title="Toggle theme">☀</button>
+    <button class="icon-btn" onclick="openSettings()" title="Settings">⚙</button>
+  </div>
+</header>
+
+<!-- ═══ LAYOUT ═══ -->
+<div class="layout">
+
+  <!-- ── INPUTS ROW ── -->
+  <div class="inputs-row">
+    <div class="card">
+      <div class="card-body">
+
+        <div class="inputs-grid">
+          <div class="field">
+            <label>Operator Name</label>
+            <input id="operator-id" type="text" placeholder="e.g. Sameer" autocomplete="off">
+          </div>
+          <div class="field">
+            <label>Task / Activity</label>
+            <input id="activity-label" type="text" placeholder="e.g. RicePouring" autocomplete="off">
+          </div>
+          <div class="field">
+            <label>Environment</label>
+            <input id="environment" type="text" placeholder="e.g. Kitchen" autocomplete="off">
+          </div>
+          <div class="field">
+            <label>Inventory Used</label>
+            <input id="inventory" type="text" placeholder="e.g. Bowl_Spoon" autocomplete="off">
+          </div>
+        </div>
+
+        <div class="actions-row">
+          <button class="btn btn-primary" id="btn-fov"   onclick="doFOV()">◉ FOV Check</button>
+          <button class="btn btn-success" id="btn-start" onclick="doStart()" disabled>▶ Start Session</button>
+          <button class="btn btn-danger"  id="btn-stop"  onclick="doStop()"  disabled>■ Stop</button>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ── MAIN CONTENT ── -->
+  <div class="main-content">
+
+    <!-- Status banner -->
+    <div class="status-banner" id="banner">Ready — run FOV check then press Start.</div>
+
+    <!-- Active session info strip -->
+    <div class="session-strip" id="session-strip">
+      <span class="strip-item">Session<span id="strip-id">—</span></span>
+      <span class="strip-sep">·</span>
+      <span class="strip-item">Operator<span id="strip-op">—</span></span>
+      <span class="strip-sep">·</span>
+      <span class="strip-item">Task<span id="strip-task">—</span></span>
+      <span class="strip-sep">·</span>
+      <span class="strip-item">Env<span id="strip-env">—</span></span>
+      <span class="strip-sep">·</span>
+      <span class="strip-item">Inventory<span id="strip-inv">—</span></span>
+    </div>
+
+    <!-- FOV preview (visible only while a check is running / just finished) -->
+    <div class="card" id="fov-card" style="display:none; margin-top:14px;">
+      <div class="card-head">
+        <span class="card-title">FOV Preview</span>
+        <span class="card-badge" id="fov-badge">—</span>
+      </div>
+      <div class="card-body" style="padding: 10px 14px;">
+        <div style="position:relative; background:#000; border-radius:8px; overflow:hidden; aspect-ratio: 16/10;">
+          <img id="fov-img" alt="FOV feed"
+               style="width:100%; height:100%; object-fit:contain; display:block;">
+          <div id="fov-placeholder"
+               style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--text-muted); font-size:0.9rem;">
+            Waiting for FOV check…
+          </div>
+        </div>
+        <div id="fov-status" style="margin-top:8px; font-size:0.9rem; color:var(--text-secondary);">
+          —
+        </div>
+        <div style="margin-top:6px; height:4px; background:var(--bg-input); border-radius:2px; overflow:hidden;">
+          <div id="fov-progress-bar" style="height:100%; width:0%; background:var(--accent); transition:width .2s, background-color .2s;"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Timer -->
+    <div class="timer-wrap" id="timer-wrap">
+      <div class="timer-digits" id="timer">00:00</div>
+      <div class="timer-sub">Segment <span id="timer-seg">1</span> of <span id="timer-total">30</span></div>
+    </div>
+
+  </div>
+
+  <!-- ── SIDEBAR ── -->
+  <div class="sidebar">
+
+    <!-- Segment Timeline -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Segments</span>
+        <span class="card-badge" id="seg-counter">0 / 30</span>
+      </div>
+      <div class="card-body" style="padding: 10px 14px;">
+        <div class="seg-list" id="seg-list">
+          <div class="empty">No segments yet</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Upload Queue -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Uploads</span>
+        <span class="card-badge" id="upload-total">0 files</span>
+      </div>
+      <div class="card-body">
+        <div class="upload-grid">
+          <div class="upload-stat n-queue">
+            <div class="upload-stat-n" id="uq-queued">0</div>
+            <div class="upload-stat-l">Queued</div>
+          </div>
+          <div class="upload-stat n-up">
+            <div class="upload-stat-n" id="uq-uploading">0</div>
+            <div class="upload-stat-l">Uploading</div>
+          </div>
+          <div class="upload-stat n-done">
+            <div class="upload-stat-n" id="uq-complete">0</div>
+            <div class="upload-stat-l">Done</div>
+          </div>
+          <div class="upload-stat n-fail">
+            <div class="upload-stat-n" id="uq-failed">0</div>
+            <div class="upload-stat-l">Failed</div>
+          </div>
+        </div>
+        <div class="file-list" id="file-list"></div>
+      </div>
+    </div>
+
+    <!-- Today's Sessions -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Today's Sessions</span>
+        <span class="card-badge" id="history-count">0</span>
+      </div>
+      <div class="card-body" style="padding: 8px 14px;">
+        <div class="history-list" id="history-list">
+          <div class="empty">No sessions today</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ═══ SETTINGS MODAL ═══ -->
+<div class="overlay" id="settings-overlay">
+  <div class="modal">
+    <div class="modal-head">
+      <span class="modal-title">Session Settings</span>
+      <button class="modal-close" onclick="closeSettings()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>Segment Duration (seconds)</label>
+        <input type="number" id="set-seg-dur" value="60" min="10" max="300" step="10">
+      </div>
+      <div class="field">
+        <label>Session Duration (seconds)</label>
+        <input type="number" id="set-sess-dur" value="1800" min="60" max="7200" step="60">
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label">MCAP Conversion</span>
+        <button class="toggle" id="set-mcap" onclick="this.classList.toggle('on')"></button>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost"   onclick="closeSettings()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ ALERT POPUP ═══ -->
+<div class="overlay" id="alert-overlay">
+  <div class="alert-modal">
+    <div class="alert-head">
+      <span class="alert-icon">⚠</span>
+      <span class="alert-title">Required Field Missing</span>
+    </div>
+    <div class="alert-body" id="alert-msg">Please fill in all required fields.</div>
+    <div class="alert-foot">
+      <button class="btn btn-danger" onclick="closeAlert()">OK, got it</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ SCRIPTS ═══ -->
+<script>
+// ── Theme ─────────────────────────────────────────────────
+function toggleTheme() {
+  const html = document.documentElement;
+  const isDark = html.getAttribute('data-theme') === 'dark';
+  html.setAttribute('data-theme', isDark ? 'light' : 'dark');
+  document.getElementById('theme-btn').textContent = isDark ? '🌙' : '☀';
+  localStorage.setItem('ec-theme', isDark ? 'light' : 'dark');
+}
+// Restore saved theme
+(function() {
+  const saved = localStorage.getItem('ec-theme');
+  if (saved) {
+    document.documentElement.setAttribute('data-theme', saved);
+    document.addEventListener('DOMContentLoaded', () => {
+      const btn = document.getElementById('theme-btn');
+      if (btn) btn.textContent = saved === 'light' ? '🌙' : '☀';
+    });
+  }
+})();
+
+// ── Alert popup ───────────────────────────────────────────
+function showAlert(message, focusId) {
+  document.getElementById('alert-msg').textContent = message;
+  document.getElementById('alert-overlay').classList.add('open');
+  if (focusId) {
+    const el = document.getElementById(focusId);
+    if (el) {
+      el.classList.add('err');
+      el.addEventListener('input', () => el.classList.remove('err'), { once: true });
+    }
+  }
+}
+function closeAlert() {
+  document.getElementById('alert-overlay').classList.remove('open');
+  const fields = ['operator-id','activity-label','environment','inventory'];
+  for (const id of fields) {
+    const el = document.getElementById(id);
+    if (el && !el.value.trim() && !el.disabled) { el.focus(); break; }
+  }
+}
+
+// ── Pill map ──────────────────────────────────────────────
+const PILLS = {
+  idle:           ['Idle',           'pill-idle'],
+  fov_checking:   ['FOV Check',      'pill-fov'],
+  fov_passed:     ['FOV Passed',     'pill-passed'],
+  fov_failed:     ['FOV Failed',     'pill-error'],
+  recording:      ['● Recording',    'pill-recording'],
+  session_active: ['Session Active', 'pill-session_active'],
+  converting:     ['Converting',     'pill-fov'],
+  complete:       ['✓ Complete',     'pill-complete'],
+  error:          ['Error',          'pill-error'],
+};
+
+// ── State ─────────────────────────────────────────────────
+let segTimer    = null;
+let segSeconds  = 60;
+let lastStatus  = 'idle';
+let maxSegments = 30;
+let lastFovState = { running: false };  // most-recent state.fov, used by FOV preview hide timer
+
+function applyState(s) {
+  const status = s.status || 'idle';
+
+  // Pill
+  const [pillText, pillCls] = PILLS[status] || ['Unknown', 'pill-idle'];
+  const pill = document.getElementById('status-pill');
+  pill.textContent = pillText;
+  pill.className   = 'status-pill ' + pillCls;
+
+  // Banner
+  const banner  = document.getElementById('banner');
+  banner.textContent = s.message || '';
+  banner.className   = 'status-banner';
+  if (status === 'error' || status === 'fov_failed') banner.classList.add('banner-error');
+  else if (status === 'complete' || status === 'fov_passed') banner.classList.add('banner-ok');
+  else if (status === 'recording' || status === 'session_active') banner.classList.add('banner-warn');
+  else if (status === 'fov_checking') banner.classList.add('banner-info');
+
+  if (s.max_segments) maxSegments = s.max_segments;
+
+  // Session info strip
+  const strip = document.getElementById('session-strip');
+  const sessionActive = ['recording','converting','session_active'].includes(status);
+  strip.classList.toggle('show', sessionActive);
+  if (s.session_id) {
+    document.getElementById('strip-id').textContent   = ' ' + s.session_id;
+    document.getElementById('strip-op').textContent   = ' ' + (s.settings?.operator_id   || '—');
+    document.getElementById('strip-task').textContent = ' ' + (s.settings?.activity_label || '—');
+    document.getElementById('strip-env').textContent  = ' ' + (s.settings?.environment    || '—');
+    document.getElementById('strip-inv').textContent  = ' ' + (s.settings?.inventory      || '—');
+  }
+
+  // FOV preview ─────────────────────────────────────────────────
+  const fovCard   = document.getElementById('fov-card');
+  const fovImg    = document.getElementById('fov-img');
+  const fovPh     = document.getElementById('fov-placeholder');
+  const fovStatus = document.getElementById('fov-status');
+  const fovBar    = document.getElementById('fov-progress-bar');
+  const fovBadge  = document.getElementById('fov-badge');
+  const fov       = s.fov || {};
+  lastFovState = fov;
+
+  if (status === 'fov_checking' || fov.running) {
+    fovCard.style.display = 'block';
+    // Cache-bust the MJPEG URL when we first start so the browser opens
+    // a fresh stream rather than reusing a closed one.
+    if (lastStatus !== 'fov_checking') {
+      fovImg.src = '/fov-stream?t=' + Date.now();
+    }
+    fovPh.style.display = 'none';
+    fovImg.style.display = 'block';
+    const total = Math.max(fov.total_sec || 1, 0.01);
+    const elap  = Math.min(fov.elapsed_sec || 0, total);
+    fovBar.style.width = ((elap / total) * 100).toFixed(0) + '%';
+    fovBar.style.background = 'var(--accent)';
+
+    // Hand-count indicator (mirrors buzzer state):
+    //   2 hands → green "BOTH HANDS IN FRAME"
+    //   1 hand  → amber "1 HAND OUT OF FRAME"   (buzzer: intermittent beep)
+    //   0 hands → red   "BOTH HANDS OUT OF FRAME" (buzzer: continuous tone)
+    const hif = fov.hands_in_frame ?? 0;
+    let handLabel, handColor;
+    if (hif >= 2)      { handLabel = 'BOTH HANDS IN FRAME';      handColor = 'var(--green)';  }
+    else if (hif === 1){ handLabel = '1 HAND OUT OF FRAME';      handColor = 'var(--orange)'; }
+    else               { handLabel = 'BOTH HANDS OUT OF FRAME';  handColor = 'var(--red)';    }
+
+    fovStatus.innerHTML =
+      `<b style="color:${handColor}">${handLabel}</b>` +
+      ` &nbsp;·&nbsp; ${fov.settled ? 'settled' : 'AE settling'}` +
+      ` &nbsp;·&nbsp; ${fov.frames_with_hands || 0}/${fov.frames_checked || 0} good frames`;
+    fovBadge.textContent = (fov.method || '—').toUpperCase();
+  } else if (status === 'fov_passed' || status === 'fov_failed') {
+    fovCard.style.display = 'block';
+    fovBar.style.width = '100%';
+    fovBar.style.background = (status === 'fov_passed') ? 'var(--green)' : 'var(--red)';
+    fovStatus.textContent = fov.message || s.message || '';
+    fovBadge.textContent  = (fov.method || '—').toUpperCase();
+    // Hide preview after a few seconds — stream will auto-close server-side.
+    setTimeout(() => {
+      // Only hide if we haven't started a new check in the meantime.
+      if (lastFovState && !lastFovState.running) {
+        fovCard.style.display = 'none';
+        fovImg.src = '';
+        fovImg.style.display = 'none';
+        fovPh.style.display = 'flex';
+      }
+    }, 4000);
+  }
+
+  // Timer
+  const timerWrap = document.getElementById('timer-wrap');
+  timerWrap.classList.toggle('show', status === 'recording');
+  if (status === 'recording' && lastStatus !== 'recording') {
+    segSeconds = s.settings?.segment_duration || 60;
+    updateTimer();
+    clearInterval(segTimer);
+    segTimer = setInterval(() => { segSeconds = Math.max(0, segSeconds - 1); updateTimer(); }, 1000);
+  } else if (status !== 'recording') {
+    clearInterval(segTimer); segTimer = null;
+  }
+  const curSeg = (s.current_segment ?? -1) >= 0 ? s.current_segment + 1 : 0;
+  document.getElementById('timer-seg').textContent   = curSeg;
+  document.getElementById('timer-total').textContent = maxSegments;
+
+  // Segments
+  renderSegments(s.segments || [], s.current_segment ?? -1);
+
+  // Uploads
+  if (s.upload_status) renderUploads(s.upload_status);
+
+  // Buttons
+  const btnFov   = document.getElementById('btn-fov');
+  const btnStart = document.getElementById('btn-start');
+  const btnStop  = document.getElementById('btn-stop');
+  btnFov.disabled   = sessionActive || status === 'fov_checking';
+  btnStart.disabled = status !== 'fov_passed';
+  btnStop.disabled  = !sessionActive;
+
+  // Lock inputs
+  ['operator-id','activity-label','environment','inventory'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = sessionActive;
+  });
+
+  // Populate inputs from server
+  if (s.settings) {
+    const map = {
+      'operator-id':    s.settings.operator_id,
+      'activity-label': s.settings.activity_label,
+      'environment':    s.settings.environment,
+      'inventory':      s.settings.inventory,
+    };
+    for (const [id, val] of Object.entries(map)) {
+      const el = document.getElementById(id);
+      if (el && val && !el.value) el.value = val;
+    }
+  }
+
+  lastStatus = status;
+}
+
+function updateTimer() {
+  const m = Math.floor(segSeconds / 60).toString().padStart(2,'0');
+  const s = (segSeconds % 60).toString().padStart(2,'0');
+  document.getElementById('timer').textContent = m + ':' + s;
+}
+
+function renderSegments(segments, currentSeg) {
+  const list    = document.getElementById('seg-list');
+  const counter = document.getElementById('seg-counter');
+  const done    = segments.filter(s => s.status === 'complete').length;
+  counter.textContent = `${done} / ${maxSegments}`;
+
+  if (!segments.length && currentSeg < 0) {
+    list.innerHTML = '<div class="empty">No segments yet</div>';
+    return;
+  }
+
+  let html = '';
+  for (let i = 0; i < maxSegments; i++) {
+    const seg    = segments.find(s => s.index === i);
+    const status = seg?.status || 'pending';
+    html += `<div class="seg-item ${i === currentSeg ? 'active' : ''}">
+      <div class="seg-dot ${status}"></div>
+      <span class="seg-num">Seg ${String(i+1).padStart(2,'0')}</span>
+      <span class="seg-status">${status}</span>
+    </div>`;
+    if (i > currentSeg + 5 && status === 'pending') {
+      html += `<div class="empty" style="padding:6px 0;">+ ${maxSegments - i - 1} more pending</div>`;
+      break;
+    }
+  }
+  list.innerHTML = html;
+  const active = list.querySelector('.seg-item.active');
+  if (active) active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function renderUploads(us) {
+  document.getElementById('uq-queued').textContent    = (us.queued||0) + (us.retrying||0);
+  document.getElementById('uq-uploading').textContent = us.uploading || 0;
+  document.getElementById('uq-complete').textContent  = us.complete  || 0;
+  document.getElementById('uq-failed').textContent    = us.failed    || 0;
+  document.getElementById('upload-total').textContent = `${us.total||0} files`;
+
+  const items     = us.items || [];
+  const active    = items.filter(i => ['uploading','retrying'].includes(i.status));
+  const failed    = items.filter(i => i.status === 'failed');
+  const completed = items.filter(i => i.status === 'complete').slice(-3).reverse();
+  const show      = [...active, ...failed, ...completed];
+  const list      = document.getElementById('file-list');
+  if (!show.length) { list.innerHTML = ''; return; }
+
+  list.innerHTML = show.map(item => {
+    const pct  = item.progress_pct || 0;
+    const size = item.size_bytes ? (item.size_bytes/1024/1024).toFixed(1) : '?';
+    const done = item.bytes_uploaded ? (item.bytes_uploaded/1024/1024).toFixed(1) : '0';
+    const bar  = item.status === 'complete' ? 'complete' : item.status === 'failed' ? 'failed' : '';
+    const pctTxt = item.status==='uploading' ? pct.toFixed(0)+'%'
+                 : item.status==='complete'  ? '✓'
+                 : item.status==='failed'    ? '✗'
+                 : item.status==='retrying'  ? 'retry' : '';
+    return `<div class="file-row">
+      <div class="file-top">
+        <span class="file-name" title="${item.filename}">${item.filename}</span>
+        <span class="file-pct ${item.status}">${pctTxt}</span>
+      </div>
+      <div class="prog-track"><div class="prog-bar ${bar}" style="width:${item.status==='complete'?100:pct}%"></div></div>
+      <div class="file-size">${done} / ${size} MB${item.error?' — '+item.error:''}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Actions ───────────────────────────────────────────────
+function doFOV() {
+  fetch('/fov-check', { method: 'POST' });
+}
+
+function doStart() {
+  const opId = document.getElementById('operator-id').value.trim();
+  const act  = document.getElementById('activity-label').value.trim();
+  const env  = document.getElementById('environment').value.trim();
+  const inv  = document.getElementById('inventory').value.trim();
+
+  if (!opId) { showAlert('Operator name is required before starting a session.', 'operator-id');    return; }
+  if (!act)  { showAlert('Task / activity label is required before starting a session.', 'activity-label'); return; }
+  if (!env)  { showAlert('Environment name is required before starting a session.', 'environment');  return; }
+  if (!inv)  { showAlert('Inventory used is required before starting a session.', 'inventory');     return; }
+
+  fetch('/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ operator_id: opId, activity_label: act, environment: env, inventory: inv })
+  }).then(() =>
+    fetch('/session/start', { method: 'POST' })
+      .then(r => r.json())
+      .then(d => { if (d.error) showAlert(d.error, null); })
+  );
+}
+
+function doStop() {
+  if (confirm('Stop the current session?')) fetch('/session/stop', { method: 'POST' });
+}
+
+// ── Settings modal ────────────────────────────────────────
+function openSettings() {
+  document.getElementById('settings-overlay').classList.add('open');
+  fetch('/settings').then(r => r.json()).then(s => {
+    document.getElementById('set-seg-dur').value  = s.segment_duration || 60;
+    document.getElementById('set-sess-dur').value = s.session_duration || 1800;
+    document.getElementById('set-mcap').classList.toggle('on', !!s.mcap_enabled);
+  });
+}
+function closeSettings() { document.getElementById('settings-overlay').classList.remove('open'); }
+function saveSettings() {
+  fetch('/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      segment_duration: parseInt(document.getElementById('set-seg-dur').value) || 60,
+      session_duration: parseInt(document.getElementById('set-sess-dur').value) || 1800,
+      mcap_enabled:     document.getElementById('set-mcap').classList.contains('on'),
+    })
+  }).then(() => closeSettings());
+}
+
+// ── History ───────────────────────────────────────────────
+function loadHistory() {
+  fetch('/history').then(r => r.json()).then(data => {
+    const sessions = data.sessions || [];
+    document.getElementById('history-count').textContent = sessions.length;
+    const list = document.getElementById('history-list');
+    if (!sessions.length) {
+      list.innerHTML = '<div class="empty">No sessions today</div>';
+      return;
+    }
+    list.innerHTML = sessions.map(h => `
+      <div class="history-row">
+        <div>
+          <div class="history-id">${h.session_id}</div>
+          <div class="history-meta">${h.operator_id||'—'} · ${h.activity||'—'} · ${h.environment||'—'}</div>
+        </div>
+        <div class="history-segs">${h.segments} seg</div>
+      </div>`).join('');
+  }).catch(() => {});
+}
+
+// ── WebSocket ─────────────────────────────────────────────
+function connectWS() {
+  const ws = new WebSocket('ws://' + location.host + '/ws');
+  ws.onmessage = e => { try { applyState(JSON.parse(e.data)); } catch(err) {} };
+  ws.onclose   = () => setTimeout(connectWS, 2000);
+  ws.onerror   = () => ws.close();
+}
+connectWS();
+fetch('/status').then(r => r.json()).then(applyState).catch(() => {});
+loadHistory();
+setInterval(loadHistory, 30000);
+</script>
+
+</body>
+</html>

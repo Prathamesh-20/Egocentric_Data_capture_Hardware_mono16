@@ -1,0 +1,32 @@
+# Python dependencies for Egocentric Capture V2.
+#
+# Pins match the versions verified working on the reference Pi (autonexego8,
+# Debian 13 trixie, Python 3.13.5). Bumping any of these is fine but should
+# be tested on one Pi before rolling to all 30.
+
+# ── Computer vision / ML ────────────────────────────────────────────────
+# ultralytics pulls in torch + torchvision automatically; pinning them
+# explicitly so all 30 Pis end up on the same CPU-only versions.
+ultralytics==8.4.50
+torch==2.12.0
+torchvision==0.27.0
+
+# OpenCV: headless variant (no GUI deps) — matches what the project uses
+# and avoids pulling in Qt/X11 packages we don't need on a headless Pi.
+opencv-python-headless==4.13.0.92
+numpy==2.2.4
+
+# ── AWS / S3 upload ─────────────────────────────────────────────────────
+boto3==1.42.83
+botocore==1.42.91
+
+# ── Web UI server ───────────────────────────────────────────────────────
+fastapi==0.135.3
+uvicorn==0.43.0
+
+# ── Recording format / data ─────────────────────────────────────────────
+mcap                 # MCAP file reader for postprocess
+rosbags==0.11.0      # ROS-bag-style I/O used by the project's postprocess
+
+# ── Networking / misc ───────────────────────────────────────────────────
+requests==2.32.3

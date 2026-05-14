@@ -1,0 +1,28 @@
+[Unit]
+Description=Egocentric Data Capture V2.1 Daemon for %i
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+Group=video
+WorkingDirectory=/home/%i/Egocentric_Data_capture_Hardware_mono16
+Environment="PYTHONPATH=/home/%i/Egocentric_Data_capture_Hardware_mono16"
+Environment="LD_LIBRARY_PATH=/home/%i/OrbbecSDK_v2.7.6_202602021228_d712cda_linux_arm64/lib"
+Environment="QT_QPA_PLATFORM=offscreen"
+Environment="ORBBEC_USER=%i"
+ExecStart=/usr/bin/python3 /home/%i/Egocentric_Data_capture_Hardware_mono16/capture_daemon.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
+KillSignal=SIGTERM
+
+# Allow USB device access
+SupplementaryGroups=plugdev gpio dialout
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,29 @@
+# /etc/systemd/system/capture-daemon.service
+#
+# This is a TEMPLATE. setup.sh substitutes the {{...}} placeholders with
+# the actual values for the Pi it's installing on, then writes the
+# resolved file to /etc/systemd/system/capture-daemon.service.
+#
+# Do NOT install this file directly — use setup.sh.
+
+[Unit]
+Description=Egocentric Data Capture V2 Daemon
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{USER}}
+Group=video
+WorkingDirectory={{PROJECT_DIR}}
+ExecStart=/usr/bin/python3 {{PROJECT_DIR}}/capture_daemon.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment="LD_LIBRARY_PATH={{SDK_LIB}}"
+Environment="QT_QPA_PLATFORM=offscreen"
+SupplementaryGroups=plugdev
+
+[Install]
+WantedBy=multi-user.target
